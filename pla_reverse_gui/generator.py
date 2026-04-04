@@ -215,6 +215,8 @@ def generate_mass_outbreak(
 @numba.njit(nogil=True)
 def generate_variable(
     seed: np.uint64,
+    allow_other_starts: bool,
+    initial_spawns: int,
     count_values: tuple[int],
     max_spawn_count: int,
     encounter_table: EncounterAreaLA,
@@ -244,8 +246,34 @@ def generate_variable(
     fixed_rng = Xoroshiro128PlusRejection(0, 0)
 
     queue = []
-    # variable multis always start by catching 2 isolated pokemon
-    queue.append(([np.uint8(2)], advance_seed(seed, 2), 0, 2))
+
+    if initial_spawns == 1:
+        queue.append(([np.uint8(1), np.uint8(1)], advance_seed(advance_seed(seed, 1), 1), 0, 1))
+        if allow_other_starts:
+            # Allow starting with 0->1
+            queue.append(([np.uint8(0), np.uint8(1)], advance_seed(seed, 1), 0, 1))
+            # Allow starting with 1->0
+            queue.append(([np.uint8(1), np.uint8(0)], advance_seed(seed, 1), 0, 1))
+            # Allow starting with 0->0
+            queue.append(([np.uint8(0), np.uint8(0)], seed, 0, 1))
+    # If it's 2 or 3
+    elif initial_spawns == 2:
+        queue.append(([np.uint8(2)], advance_seed(seed, 2), 0, 2))
+        if allow_other_starts:
+            # Allow starting with 1->
+            queue.append(([np.uint8(1)], advance_seed(seed, 1), 0, 2))
+            # Allow starting with 0->
+            queue.append(([np.uint8(0)], seed, 0, 2))
+    elif initial_spawns == 3:
+        queue.append(([np.uint8(3)], advance_seed(seed, 3), 0, 3))
+        if allow_other_starts:
+            # Allow starting with 2->
+            queue.append(([np.uint8(2)], advance_seed(seed, 2), 0, 3))
+            # Allow starting with 1->
+            queue.append(([np.uint8(1)], advance_seed(seed, 1), 0, 3))
+            # Allow starting with 0->
+            queue.append(([np.uint8(0)], seed, 0, 3))
+        
     initial_advances = len(queue[0][0])
     # check parent_data[1] flag each item
     while len(queue) != 0 and parent_data[1] == 0:
@@ -363,6 +391,8 @@ def generate_variable(
 @numba.njit(nogil=True)
 def generate_standard(
     seed: np.uint64,
+    allow_other_starts: bool,
+    initial_spawns,
     starting_path: tuple[int],
     min_adv: int,
     max_adv: int,
@@ -392,6 +422,7 @@ def generate_standard(
     fixed_rng = Xoroshiro128PlusRejection(0, 0)
 
     queue = []
+    print(f"Allow other starts: {allow_other_starts}")
     if starting_path[0] == -1:
         if spawn_count == 1:
             # single spawners always start by catching two consecutive mons
@@ -401,6 +432,9 @@ def generate_standard(
         elif spawn_count > 1:
             # triple/double spawners always start by catching the two mons there
             queue.append(([np.uint8(2)], advance_seed(seed, spawn_count)))
+
+            if allow_other_starts:
+                queue.append(([np.uint8(1)], advance_seed(seed, 1)))
         if spawn_count == 3:
             # triple spawners also have the option of catching the third mon
             queue.append(([np.uint8(3)], advance_seed(seed, spawn_count)))

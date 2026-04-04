@@ -138,6 +138,17 @@ class ResultTableWidget(QTableWidget):
         path_text = selected_row.text()
         if path_text == "N/A":
             return
+
+        # Get the weather and time from the selected row's aggregated sets
+        weather_item = self.item(self.selectedIndexes()[0].row(), 2)
+        time_item = self.item(self.selectedIndexes()[0].row(), 3)
+        weather_list = weather_item.data(Qt.UserRole) if weather_item else []
+        time_list = time_item.data(Qt.UserRole) if time_item else []
+
+        # Use the first element of each list, or fallback to stored self.weather/time
+        weather = weather_list[0] if weather_list else self.weather
+        time_val = time_list[0] if time_list else self.time
+
         spawn_counts = (-1,)
         if self.max_spawn_count == 4:
             pre_path = (1, 1)
@@ -156,8 +167,8 @@ class ResultTableWidget(QTableWidget):
             path,
             spawn_counts,
             self.max_spawn_count,
-            self.weather,
-            self.time,
+            weather,
+            time_val,
             self.species_info,
         )
         path_tracker.show()

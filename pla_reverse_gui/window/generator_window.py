@@ -73,13 +73,18 @@ AREA_WEATHERS = {
 TIME_DAYTIME = 100
 TIME_ANYTIME = 101
 
-def compute_result_count(max_spawn_count: int, max_path_length: int) -> int:
+def compute_result_count(max_spawn_count: int, max_path_length: int, allow_other_starts: bool) -> int:
+    """Calculate the total amount of results to be generated for a given spawner, max path length and if the user allows other starting paths"""
     if max_spawn_count == 1:
         return max_path_length
-    initial_value = 1 if max_spawn_count != 3 else 2
+    if max_spawn_count == 4:
+        initial_value = 1
+    else:
+        ## In the case of 2 or 3 max spawn counts
+        initial_value = (max_spawn_count - 1) + allow_other_starts * 1
     return initial_value * (1 - max_spawn_count**max_path_length) // (1 - max_spawn_count)
 
-def compute_result_count_variable(spawn_counts: list[int]) -> int:
+def compute_result_count_variable(spawn_counts: list[int], allow_other_starts: bool) -> int:
     """
     Count the number of internal states (where count_idx < len(spawn_counts))
     that will be popped from the queue and trigger an atomic_add.
@@ -105,7 +110,6 @@ def compute_result_count_variable(spawn_counts: list[int]) -> int:
                     total_internal += count
         dp = new_dp
 
-    print(f"Total nodes: {total_internal}")
     return total_internal
 
 def labled_widget(label: str, widget_constructor: QWidget, *args, **kwargs) -> tuple[QWidget, QWidget]:
@@ -261,13 +265,53 @@ class GeneratorWindow(QDialog):
             shiny_rolls_combobox.setCurrentIndex(target_index)
 
             self.settings_layout.addWidget(shiny_rolls_outer)
-            self.shiny_rolls_comboboxes[slot.species] = shiny_rolls_combobox
-        starting_path_label = QLabel("Spawn Count Values:" if is_variable else "Starting Path:")
+            self.shiny_rolls_comboboxes[
+                slot.species
+            ] = shiny_rolls_combobox
+        self.allow_other_starts_checkbox = QCheckBox("Allow paths that do not start with catch-2")
+        self.allow_other_starts_checkbox.setVisible(self.spawner.max_spawn_count > 1 and not self.spawner.is_mass_outbreak)
+        self.settings_layout.addWidget(self.allow_other_starts_checkbox)
+        
+        if is_variable:
+            initial_spawn_options = []
+            
+            if self.spawner.min_spawn_count == 1:
+                initial_spawn_options.append("1->1")
+            initial_spawn_options.append("2")
+            if self.spawner.max_spawn_count == 3:
+                initial_spawn_options.append("3")
+            
+            spawn_count_extended = QHBoxLayout()
+            
+            initial_spawn_layout = QVBoxLayout()
+            self.initial_spawn_label = QLabel("Initial\nspawns:")
+            initial_spawn_layout.addWidget(self.initial_spawn_label)
+            self.initial_spawn_box = QComboBox()
+            self.initial_spawn_box.addItems(initial_spawn_options)
+            initial_spawn_layout.addWidget(self.initial_spawn_box)
+            
+            spawn_count_layout = QVBoxLayout()
+            starting_path_label = QLabel("Spawn Count Values:")
+            spawn_count_layout.addWidget(starting_path_label)
+            self.starting_path_input = QLineEdit()
+            spawn_count_layout.addWidget(self.starting_path_input)
+            
+            spawn_count_extended.addLayout(initial_spawn_layout)
+            spawn_count_extended.addLayout(spawn_count_layout)
+            self.settings_layout.addLayout(spawn_count_extended)
+            
+        else:
+            starting_path_label = QLabel("Starting Path:")
+            self.settings_layout.addWidget(starting_path_label)
+            self.starting_path_input = QLineEdit()
+            self.settings_layout.addWidget(self.starting_path_input)
+        
         starting_path_label.setVisible(self.spawner.max_spawn_count > 1 and not self.spawner.is_mass_outbreak)
-        self.settings_layout.addWidget(starting_path_label)
-        self.starting_path_input = QLineEdit()
+        # TODO: regex validation
+        # self.starting_path_input.setValidator(
+        #     QRegularExpressionValidator(QtCore.QRegularExpression(""))
+        # )
         self.starting_path_input.setVisible(self.spawner.max_spawn_count > 1 and not self.spawner.is_mass_outbreak)
-        self.settings_layout.addWidget(self.starting_path_input)
 
         self.filter_widget = QWidget()
         self.filter_layout = QVBoxLayout(self.filter_widget)
@@ -609,6 +653,14 @@ class GeneratorWindow(QDialog):
         filtered_genders = self.gender_filter.get_checked_values()
         filtered_natures = self.nature_filter.get_checked_values()
         filtered_sizes = self.size_filter.get_checked_values()
+        # Parse initial spawns for variable spawners – use first character as integer
+        if hasattr(self, 'initial_spawn_box'):
+            selected = self.initial_spawn_box.currentText()
+            # "1->1" becomes 1, "2" becomes 2, "3" becomes 3
+            initial_spawns = int(selected[0])
+        else:
+            initial_spawns = 0
+            
         shiny_filter = self.shiny_filter.currentData() or 15
         alpha_filter = self.alpha_filter.checkState() == QtCore.Qt.Checked
         shortest_path_filter = self.shortest_path_filter.checkState() == QtCore.Qt.Checked
@@ -661,9 +713,9 @@ class GeneratorWindow(QDialog):
             rep_to_times = {time_data.value: [time_data.value]}
 
         if self.spawner.is_mass_outbreak or self.spawner.min_spawn_count != self.spawner.max_spawn_count:
-            per_combo = compute_result_count_variable(starting_path)
+            per_combo = compute_result_count_variable(starting_path, self.allow_other_starts_checkbox.isChecked())
         else:
-            per_combo = compute_result_count(self.spawner.max_spawn_count, advance_range.stop)
+            per_combo = compute_result_count(self.spawner.max_spawn_count, advance_range.stop, self.allow_other_starts_checkbox.isChecked())
 
         per_combo_progress = [per_combo] * len(combos)
         total_progress = per_combo * len(combos)
@@ -688,6 +740,8 @@ class GeneratorWindow(QDialog):
         elif self.spawner.min_spawn_count != self.spawner.max_spawn_count:
             base_args = (
                 seed,
+                self.allow_other_starts_checkbox.isChecked(),
+                initial_spawns,
                 starting_path,
                 self.spawner.max_spawn_count,
                 self.encounter_table,
@@ -702,6 +756,8 @@ class GeneratorWindow(QDialog):
         else:
             base_args = (
                 seed,
+                self.allow_other_starts_checkbox.isChecked(),
+                initial_spawns,
                 starting_path,
                 advance_range.start,
                 advance_range.stop,
