@@ -127,6 +127,7 @@ class ResultTableWidget(QTableWidget):
         self.weather = None
         self.time = None
         self.spawn_counts = None
+        self.initial_spawns = 0
 
     def context_menu_handler(self, pos):
         menu = QMenu(self)
@@ -153,8 +154,12 @@ class ResultTableWidget(QTableWidget):
         if self.max_spawn_count == 4:
             pre_path = (1, 1)
         elif self.min_spawn_count != self.max_spawn_count:
-            pre_path = (2,)
+            if self.initial_spawns == 1:
+                pre_path = (1, 1)
+            else:
+                pre_path = (self.initial_spawns, )
             spawn_counts = self.spawn_counts
+            print(f"Pre-path: {pre_path}, Spawn counts: {spawn_counts}")
         else:
             pre_path = (self.max_spawn_count,)
         path = string_to_path(path_text)
@@ -170,5 +175,6 @@ class ResultTableWidget(QTableWidget):
             weather,
             time_val,
             self.species_info,
+            self.initial_spawns,
         )
         path_tracker.show()

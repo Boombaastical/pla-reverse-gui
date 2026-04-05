@@ -65,6 +65,7 @@ class PathTrackerWindow(QDialog):
         weather: LAWeather,
         time: LATime,
         species_info: dict[tuple[int, int], tuple[int, int, bool]],
+        initial_spawns: int = 0,
     ) -> None:
         super().__init__(parent)
 
@@ -82,7 +83,8 @@ class PathTrackerWindow(QDialog):
         ghost_count = 3
         count_idx = -1
         # variable multi logic
-        current_spawn_count = 2
+        print(f"Initial spawns: {initial_spawns}, count_values: {count_values}, pre-path: {pre_path}")
+        current_spawn_count = initial_spawns if count_values[0] != -1 else 2
         for advance, spawn_count in enumerate(pre_path + path, start=-len(pre_path)):
             is_ghost = False
             # clear wave

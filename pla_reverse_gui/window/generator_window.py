@@ -680,6 +680,8 @@ class GeneratorWindow(QDialog):
 
         if self.spawner.is_mass_outbreak:
             combos = [(weather_data, time_data)]
+            rep_to_weathers = {}      # empty dict – will not be used in mass outbreak
+            full_map_weathers = None
         else:
             time_filter = None if time_data is None else time_data
             weather_filter = None if weather_data is None else weather_data
@@ -812,6 +814,7 @@ class GeneratorWindow(QDialog):
         self.result_table.time = self.time_combobox.currentData()
         self.result_table.species_info = species_info
         self.result_table.spawn_counts = starting_path
+        self.result_table.initial_spawns = initial_spawns
 
     def add_result(self, row: tuple, group_tuple: tuple, result_id: int):
         (
