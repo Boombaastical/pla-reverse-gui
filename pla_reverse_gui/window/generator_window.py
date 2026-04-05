@@ -139,6 +139,7 @@ class GeneratorWindow(QDialog):
         self.spawner = spawner
         self.encounter_table = encounter_table
         self.second_wave_encounter_table = second_wave_encounter_table
+        print(f"Second wave: {self.second_wave_encounter_table}")
         self.has_second_wave = self.second_wave_encounter_table is not None
         self.is_mmo = spawner.encounter_table_id != self.encounter_table.table_id
         is_variable = spawner.min_spawn_count != spawner.max_spawn_count
