@@ -154,12 +154,14 @@ class ResultTableWidget(QTableWidget):
         if self.max_spawn_count == 4:
             pre_path = (1, 1)
         elif self.min_spawn_count != self.max_spawn_count:
+            full_path = string_to_path(path_text)
             if self.initial_spawns == 1:
                 pre_path = (1, 1)
+                path = full_path[1:]
             else:
-                pre_path = (self.initial_spawns, )
+                pre_path = (self.initial_spawns,)
+                path = full_path[1:]
             spawn_counts = self.spawn_counts
-            print(f"Pre-path: {pre_path}, Spawn counts: {spawn_counts}")
         else:
             pre_path = (self.max_spawn_count,)
         path = string_to_path(path_text)
