@@ -2,22 +2,27 @@
 import numpy as np
 from numba_pokemon_prngs.data.encounter import EncounterAreaLA
 from numba_pokemon_prngs.data import NATURES_EN
-from numba_pokemon_prngs.enums import LATime, LAWeather
+from numba_pokemon_prngs.enums import LATime, LAWeather, LAArea
 from numba_pokemon_prngs.xorshift import Xoroshiro128PlusRejection
 
 # pylint: disable=no-name-in-module
 from qtpy.QtWidgets import (
-    QDialog,
+    QHBoxLayout,
     QVBoxLayout,
-    QWidget,
-    QTableWidget,
+    QDialog,
+    QLabel,
     QSizePolicy,
+    QTableWidget,
     QTableWidgetItem,
+    QWidget,
 )
 
-# pylint: enable=no-name-in-module
+from qtpy.QtGui import QIcon, QPixmap
+from qtpy.QtCore import Qt
+from pathlib import Path
 
-from ..util import calc_effort_level, get_personal_index, get_name_en, path_to_string
+# pylint: enable=no-name-in-module
+from ..util import calc_effort_level, get_personal_index, get_name_en, path_to_string, AREA_WEATHERS
 from ..pla_reverse_main.pla_reverse.size import calc_display_size
 
 
@@ -25,13 +30,13 @@ class PathTableWidget(QTableWidget):
     """QTableWidget for spawner paths"""
 
     COLUMNS = (
-        ("Advances", 100),
-        ("Path", 100),
-        ("Species", 100),
-        ("Shiny", 80),
-        ("Alpha", 80),
+        ("Advances", 90),
+        ("Path", 140),
+        ("Species", 120),
+        ("Shiny", 60),
+        ("Alpha", 60),
         ("Nature", 80),
-        ("Effort Levels", 120),
+        ("Effort Levels", 100),
         ("Gender", 70),
         ("Height", 80),
         ("Weight", 80),
@@ -47,6 +52,9 @@ class PathTableWidget(QTableWidget):
 
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.verticalHeader().setVisible(False)
+
+        self.setMinimumHeight(500)
+        self.setMinimumWidth(900)
 
 
 class PathTrackerWindow(QDialog):
@@ -64,13 +72,55 @@ class PathTrackerWindow(QDialog):
         time: LATime,
         species_info: dict[tuple[int, int], tuple[int, int, bool]],
         initial_spawns: int = 0,
+        area: LAArea = None,
     ) -> None:
         super().__init__(parent)
 
         self.setWindowTitle("Path Tracker " + path_to_string(path))
         self.main_layout = QVBoxLayout(self)
+        # --- Top info widgets ---
+        top_widget = QWidget()
+        top_layout = QHBoxLayout(top_widget)
+
+        # Left: Time icons (daytime + night)
+        time_layout = QHBoxLayout()
+        daytime_icon = QIcon(self.get_icon_path("time_daytime.png"))
+        night_icon = QIcon(self.get_icon_path("time_night.png"))
+        daytime_label = QLabel()
+        daytime_label.setPixmap(daytime_icon.pixmap(32, 32))
+        night_label = QLabel()
+        night_label.setPixmap(night_icon.pixmap(32, 32))
+        time_layout.addWidget(daytime_label)
+        time_layout.addWidget(night_label)
+        time_layout.addStretch()
+
+        # Right: Weather icons for this area
+        weather_layout = QHBoxLayout()
+        if area is not None and area in AREA_WEATHERS:
+            for weather in AREA_WEATHERS[area]:
+                icon = self.get_weather_icon(weather.value)
+                if icon:
+                    label = QLabel()
+                    label.setPixmap(icon.pixmap(32, 32))
+                    weather_layout.addWidget(label)
+        weather_layout.addStretch()
+
+        top_layout.addLayout(time_layout)
+        top_layout.addLayout(weather_layout)
+
+        # Path display with current step highlighted (static for now)
+        self.path_display_label = QLabel()
+        self.path_display_label.setTextFormat(Qt.RichText)
+        self.update_path_display(path, 0)   # highlight first step as example
+
+        # Add to main layout
+        self.main_layout.addWidget(top_widget)
+        self.main_layout.addWidget(self.path_display_label)
+
+        # Table widget (as before)
         self.path_table = PathTableWidget()
         self.main_layout.addWidget(self.path_table)
+
         self.resize(
             sum(column[1] for column in self.path_table.COLUMNS),
             self.height(),
@@ -213,3 +263,39 @@ class PathTrackerWindow(QDialog):
             # Advance RNG for the next wave (if any Pokémon were generated)
             if spawn_count != 0:
                 group_rng.re_init(np.uint64(group_rng.next()))
+
+    def get_icon_path(self, icon_name: str) -> str:
+        current_dir = Path(__file__).parent
+        package_root = current_dir.parent
+        icon_path = package_root / "Resources" / "Icons" / icon_name
+        return str(icon_path)
+
+    def get_weather_icon(self, weather_val: int):
+        try:
+            weather_name = LAWeather(weather_val).name.lower()
+        except ValueError:
+            return None
+        icon_map = {
+            'sunny': 'weather_sunny.png',
+            'cloudy': 'weather_cloudy.png',
+            'rain': 'weather_rain.png',
+            'snow': 'weather_snow.png',
+            'drought': 'weather_drought.png',
+            'fog': 'weather_fog.png',
+            'rainstorm': 'weather_rainstorm.png',
+            'snowstorm': 'weather_snowstorm.png',
+            'none': 'weather_any.png',
+        }
+        filename = icon_map.get(weather_name)
+        if filename:
+            path = self.get_icon_path(filename)
+            return QIcon(path)
+        return None
+    
+    def update_path_display(self, path_tuple: tuple[int], current_index: int):
+        """Format path string with current step wrapped in <big> tags."""
+        parts = [str(step) for step in path_tuple]
+        if 0 <= current_index < len(parts):
+            parts[current_index] = f"<big><b>{parts[current_index]}</b></big>"
+        path_str = " → ".join(parts)
+        self.path_display_label.setText(f"Path: {path_str}")

@@ -38,37 +38,12 @@ from pathlib import Path
 # pylint: enable=no-name-in-module
 
 from .result_table_widget import ResultTableWidget
-from ..util import get_name_en, get_personal_info, get_personal_index, path_to_string
+from ..util import get_name_en, get_personal_info, get_personal_index, path_to_string, AREA_WEATHERS
 from .checkable_combobox_widget import CheckableComboBox
 from .range_widget import RangeWidget
 from ..generator import generate_standard, generate_mass_outbreak, generate_variable
 from ..pla_reverse_main.pla_reverse.size import calc_display_size
 from .eta_progress_bar import ETAProgressBar
-
-# Weathers that can actually occur on each area (excluding NONE, which is always possible)
-AREA_WEATHERS = {
-    LAArea.OBSIDIAN_FIELDLANDS: [
-        LAWeather.SUNNY, LAWeather.CLOUDY, LAWeather.RAIN,
-        LAWeather.DROUGHT, LAWeather.FOG, LAWeather.RAINSTORM
-    ],
-    LAArea.CRIMSON_MIRELANDS: [
-        LAWeather.SUNNY, LAWeather.RAIN, LAWeather.CLOUDY,
-        LAWeather.FOG, LAWeather.RAINSTORM
-    ],
-    LAArea.COBALT_COASTLANDS: [
-        LAWeather.SUNNY, LAWeather.DROUGHT, LAWeather.RAIN,
-        LAWeather.RAINSTORM, LAWeather.CLOUDY, LAWeather.FOG
-    ],
-    LAArea.CORONET_HIGHLANDS: [
-        LAWeather.SUNNY, LAWeather.CLOUDY, LAWeather.RAIN,
-        LAWeather.SNOW, LAWeather.FOG, LAWeather.RAINSTORM,
-        LAWeather.SNOWSTORM
-    ],
-    LAArea.ALABASTER_ICELANDS: [
-        LAWeather.SUNNY, LAWeather.SNOW, LAWeather.SNOWSTORM,
-        LAWeather.CLOUDY
-    ],
-}
 
 TIME_DAYTIME = 100
 TIME_ANYTIME = 101
@@ -379,6 +354,7 @@ class GeneratorWindow(QDialog):
         self.generate_button.clicked.connect(self.generate)
 
         self.result_table = ResultTableWidget()
+        self.result_table.area = self.area
         self.result_table.parent_window = self
         self.main_layout.addWidget(self.header_widget)
         self.main_layout.addWidget(self.top_widget)

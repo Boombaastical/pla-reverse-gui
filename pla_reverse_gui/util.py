@@ -2,6 +2,7 @@
 
 from numba_pokemon_prngs.data.personal import PERSONAL_INFO_LA, PersonalInfo8LA
 from numba_pokemon_prngs.data import SPECIES_EN
+from numba_pokemon_prngs.enums import LAWeather, LAArea
 
 EVO_LINES = [
     ((722, 0), (723, 0), (724, 1)),
@@ -147,6 +148,30 @@ EVO_LINES = [
     ((627, 0), (628, 1)),
     ((447, 0), (448, 0)),
 ]
+
+AREA_WEATHERS = {
+    LAArea.OBSIDIAN_FIELDLANDS: [
+        LAWeather.SUNNY, LAWeather.CLOUDY, LAWeather.RAIN,
+        LAWeather.DROUGHT, LAWeather.FOG, LAWeather.RAINSTORM
+    ],
+    LAArea.CRIMSON_MIRELANDS: [
+        LAWeather.SUNNY, LAWeather.RAIN, LAWeather.CLOUDY,
+        LAWeather.FOG, LAWeather.RAINSTORM
+    ],
+    LAArea.COBALT_COASTLANDS: [
+        LAWeather.SUNNY, LAWeather.DROUGHT, LAWeather.RAIN,
+        LAWeather.RAINSTORM, LAWeather.CLOUDY, LAWeather.FOG
+    ],
+    LAArea.CORONET_HIGHLANDS: [
+        LAWeather.SUNNY, LAWeather.CLOUDY, LAWeather.RAIN,
+        LAWeather.SNOW, LAWeather.FOG, LAWeather.RAINSTORM,
+        LAWeather.SNOWSTORM
+    ],
+    LAArea.ALABASTER_ICELANDS: [
+        LAWeather.SUNNY, LAWeather.SNOW, LAWeather.SNOWSTORM,
+        LAWeather.CLOUDY
+    ],
+}
 
 
 def path_to_string(path: tuple[int]) -> str:
