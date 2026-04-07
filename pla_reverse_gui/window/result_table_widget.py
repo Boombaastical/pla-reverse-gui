@@ -129,6 +129,7 @@ class ResultTableWidget(QTableWidget):
         self.spawn_counts = None
         self.initial_spawns = 0
         self.area = None
+        self.allow_other_starts = False
 
     def context_menu_handler(self, pos):
         menu = QMenu(self)
@@ -180,5 +181,6 @@ class ResultTableWidget(QTableWidget):
             self.species_info,
             self.initial_spawns,
             self.area,
+            self.allow_other_starts,
         )
         path_tracker.show()

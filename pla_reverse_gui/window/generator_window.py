@@ -354,7 +354,8 @@ class GeneratorWindow(QDialog):
         self.generate_button.clicked.connect(self.generate)
 
         self.result_table = ResultTableWidget()
-        self.result_table.area = self.area
+        self.result_table.area = area
+        self.result_table.allow_other_starts = self.allow_other_starts_checkbox.isChecked()
         self.result_table.parent_window = self
         self.main_layout.addWidget(self.header_widget)
         self.main_layout.addWidget(self.top_widget)
@@ -792,6 +793,7 @@ class GeneratorWindow(QDialog):
         self.result_table.species_info = species_info
         self.result_table.spawn_counts = starting_path
         self.result_table.initial_spawns = initial_spawns
+        self.result_table.allow_other_starts = self.allow_other_starts_checkbox.isChecked()
 
     def add_result(self, row: tuple, group_tuple: tuple, result_id: int):
         (
