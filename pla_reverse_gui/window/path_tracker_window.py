@@ -14,6 +14,7 @@ from qtpy.QtWidgets import (
     QLabel,
     QPushButton,
     QSizePolicy,
+    QStyledItemDelegate,
     QTableWidget,
     QTableWidgetItem,
     QWidget,
@@ -61,9 +62,31 @@ class PathTableWidget(QTableWidget):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.verticalHeader().setVisible(False)
 
+        delegate = IconDelegate(self, icon_size=32)
+        self.setItemDelegateForColumn(1, delegate)  # Time column
+        self.setItemDelegateForColumn(2, delegate)  # Weather column
+
+        self.persistent_caught = {}  # key: (advance, idx_in_step) -> state dict
+
         self.setMinimumHeight(500)
         self.setMinimumWidth(900)
 
+class IconDelegate(QStyledItemDelegate):
+    def __init__(self, parent=None, icon_size=28):
+        super().__init__(parent)
+        self.icon_size = icon_size
+
+    def paint(self, painter, option, index):
+        icon = index.data(Qt.DecorationRole)
+        if icon and isinstance(icon, QIcon):
+            # Center the icon
+            rect = option.rect
+            pixmap = icon.pixmap(self.icon_size, self.icon_size)
+            x = rect.x() + (rect.width() - pixmap.width()) // 2
+            y = rect.y() + (rect.height() - pixmap.height()) // 2
+            painter.drawPixmap(x, y, pixmap)
+        else:
+            super().paint(painter, option, index)
 
 class PathTrackerWindow(QDialog):
     def __init__(self,
@@ -83,7 +106,7 @@ class PathTrackerWindow(QDialog):
                  allow_other_starts=False):
         super().__init__(parent)
 
-        # Store parameters (as before)
+        # Store parameters
         self.encounter_table = encounter_table
         self.second_wave_encounter_table = second_wave_encounter_table
         self.seed = seed
@@ -98,11 +121,18 @@ class PathTrackerWindow(QDialog):
         self.current_weather = weather
         self.current_time = time
 
+        # Persistent storage for caught states across recalculations
+        self.persistent_caught = {}   # key: (advance, idx_in_step) -> {'caught_state', 'stored_time', 'stored_weather'}
+
+        self.row_states = []
+        self.step_spawn_counts = {}
+        self.step_caught_counts = {}
+
         self.setWindowTitle("Path Tracker " + path_to_string(path))
         self.main_layout = QVBoxLayout(self)
 
-        # Create table early (so it exists when signals fire)
-        self.path_table = PathTableWidget()
+        # Create table
+        self.path_table = PathTableWidget()   # PathTableWidget defined earlier (with IconDelegate)
         self._initializing = True
 
         # Build top widgets (time and weather)
@@ -195,26 +225,26 @@ class PathTrackerWindow(QDialog):
         self.btn_done = QPushButton("Done (E)")
         self.btn_done.setShortcut(Qt.Key_E)
         self.btn_done.clicked.connect(self.on_done)
+        self.btn_done.setEnabled(False)  # initially disabled
 
+        # Layout for control row
         button_layout = QHBoxLayout()
         button_layout.addWidget(self.btn_reset)
         button_layout.addWidget(self.btn_undo)
         button_layout.addWidget(self.btn_done)
         button_layout.addStretch()
-
         control_row = QWidget()
         control_layout = QHBoxLayout(control_row)
         control_layout.addWidget(self.path_display_label, stretch=1)
         control_layout.addLayout(button_layout)
 
-        # Add everything to main layout
+        # Main layout
         self.main_layout.addWidget(top_widget)
         self.main_layout.addWidget(control_row)
         self.main_layout.addWidget(self.path_table)
 
         self.resize(sum(c[1] for c in self.path_table.COLUMNS), self.height())
 
-        # Finish initialization and run simulation
         self._initializing = False
         self.run_simulation()
 
@@ -222,9 +252,11 @@ class PathTrackerWindow(QDialog):
     # Simulation logic (extracted from __init__)
     # ----------------------------------------------------------------------
     def run_simulation(self):
-        """Clear and rebuild the table using current weather/time."""
+        """Rebuild table using current weather/time, restoring persistent caught states."""
         self.path_table.setRowCount(0)
         self.row_states = []
+        self.step_spawn_counts.clear()
+        self.step_caught_counts.clear()
 
         current_encounter_table = self.encounter_table
         group_rng = Xoroshiro128PlusRejection(self.seed)
@@ -232,7 +264,6 @@ class PathTrackerWindow(QDialog):
 
         count_vals = self.count_values
         if count_vals[0] != -1:
-            # Variable multispawner
             full_sequence = (self.initial_spawns,) + self.path
             count_vals = (self.initial_spawns,) + self.pre_path + self.count_values
         else:
@@ -241,13 +272,10 @@ class PathTrackerWindow(QDialog):
         pre_len = len(self.pre_path)
         index_start_modifier = pre_len if not self.allow_other_starts else 0
 
-        # Keep track of the last advance value
-        last_advance = None
+        rows_by_key = {}   # (advance, idx_in_step) -> state
 
-        # Enumerate
         for advance, spawn_count in enumerate(full_sequence):
             is_ghost = False
-
             # Special values
             if spawn_count == 255:
                 spawn_count = 4
@@ -274,8 +302,7 @@ class PathTrackerWindow(QDialog):
                 generated = max(0, next_number_of_spawns - count_before_spawns)
                 spawn_count = generated
 
-            # Generate Pokémon
-            for _ in range(spawn_count):
+            for idx_in_step in range(spawn_count):
                 generator_seed = np.uint64(group_rng.next())
                 generator_rng = Xoroshiro128PlusRejection(generator_seed)
                 group_rng.next()
@@ -331,26 +358,27 @@ class PathTrackerWindow(QDialog):
 
                 row_i = self.path_table.rowCount()
                 self.path_table.insertRow(row_i)
-                # Determine advance value to display
                 display_adv = advance - index_start_modifier
 
-                # Create Caught button
+                # Caught button
                 caught_btn = QPushButton()
                 caught_btn.setFixedSize(40, 25)
-                # We'll set text later
                 self.path_table.setCellWidget(row_i, 0, caught_btn)
 
-                # Time and Weather items (will be set later)
+                # Time and Weather items (empty text, icon set later)
                 time_item = QTableWidgetItem()
                 weather_item = QTableWidgetItem()
+                time_item.setText("")
+                weather_item.setText("")
                 self.path_table.setItem(row_i, 1, time_item)
                 self.path_table.setItem(row_i, 2, weather_item)
 
-                # Store row state
-                row_state = {
+                # Prepare row state (will be filled after restoring persistent data)
+                state = {
                     'advance': display_adv,
+                    'idx_in_step': idx_in_step,
                     'locked': False,
-                    'caught_state': None,   # None, '1', '2', '3', 'check'
+                    'caught_state': None,
                     'stored_time': self.current_time,
                     'stored_weather': self.current_weather,
                     'row_i': row_i,
@@ -358,13 +386,14 @@ class PathTrackerWindow(QDialog):
                     'time_item': time_item,
                     'weather_item': weather_item,
                 }
-                self.row_states.append(row_state)
+                self.row_states.append(state)
+                key = (display_adv, idx_in_step)
+                rows_by_key[key] = state
 
-                # Connect button click
                 caught_btn.clicked.connect(partial(self.on_caught_clicked, row_i))
 
                 row_data = (
-                    str(advance - index_start_modifier),
+                    str(display_adv),
                     path_to_string(current_path),
                     get_name_en(slot.species, slot.form, slot.is_alpha),
                     "Square" if shiny == 2 else "Star" if shiny else "No",
@@ -375,30 +404,66 @@ class PathTrackerWindow(QDialog):
                     f"{disp_metric[0]:.02f} m | {disp_imperial[0][0]:.00f}'{disp_imperial[0][1]:.00f}\" ({height})",
                     f"{disp_metric[1]:.02f} kg | {disp_imperial[1]:.01f} lbs ({weight})",
                 )
+
+                # Fill other columns (start=3)
                 for j, value in enumerate(row_data, start=3):
-                    item = QTableWidgetItem(value)
-                    self.path_table.setItem(row_i, j, item)
-
-            if self.row_states:
-                max_adv = max((s['advance'] for s in self.row_states), default=None)
-                for state in self.row_states:
-                    if state['advance'] < 0:
-                        state['locked'] = True
-                        state['caught_state'] = 'check'
-                        # stored_time/weather already = initial values (since they were set during generation)
-                    elif state['advance'] == max_adv:
-                        state['locked'] = True
-                        state['caught_state'] = None   # not caught, but time/weather frozen to original
-                        # stored_time/weather already = initial values
-                    else:
-                        state['locked'] = False
-                        state['caught_state'] = None
-
-                    # Update button text and time/weather icons for all rows
-                    self.update_row_states()
+                    self.path_table.setItem(row_i, j, QTableWidgetItem(value))
 
             if spawn_count != 0:
                 group_rng.re_init(np.uint64(group_rng.next()))
+
+        # After all rows are generated, compute step spawn counts
+        for state in self.row_states:
+            adv = state['advance']
+            self.step_spawn_counts[adv] = self.step_spawn_counts.get(adv, 0) + 1
+            self.step_caught_counts[adv] = 0
+
+        # Restore persistent caught states
+        for key, state in rows_by_key.items():
+            if key in self.persistent_caught:
+                saved = self.persistent_caught[key]
+                state['caught_state'] = saved['caught_state']
+                state['locked'] = True
+                state['stored_time'] = saved['stored_time']
+                state['stored_weather'] = saved['stored_weather']
+                if state['caught_state'] == 'check':
+                    self.step_caught_counts[state['advance']] += 1
+
+        # Lock negative advances and last advance (if not already locked)
+        if self.row_states:
+            max_adv = max(s['advance'] for s in self.row_states)
+            for state in self.row_states:
+                if state['advance'] < 0 and not state['locked']:
+                    state['locked'] = True
+                    state['caught_state'] = 'check'
+                    state['stored_time'] = self.current_time
+                    state['stored_weather'] = self.current_weather
+                    self.step_caught_counts[state['advance']] += 1
+                elif state['advance'] == max_adv and not state['locked']:
+                    state['locked'] = True
+                    state['caught_state'] = None
+                    state['stored_time'] = self.current_time
+                    state['stored_weather'] = self.current_weather
+
+        # Set current step to first non‑negative advance
+        non_negative = sorted([adv for adv in self.step_spawn_counts if adv >= 0])
+        self.current_step_advance = non_negative[0] if non_negative else None
+
+        # Update UI
+        self.update_row_states()
+        if self.current_step_advance is not None:
+            self.renumber_step_buttons(self.current_step_advance)
+        self.update_done_button_state()
+
+        # Save all states to persistent storage for future recalculations
+        self.persistent_caught.clear()
+        for state in self.row_states:
+            key = (state['advance'], state['idx_in_step'])
+            self.persistent_caught[key] = {
+                'caught_state': state['caught_state'],
+                'stored_time': state['stored_time'],
+                'stored_weather': state['stored_weather'],
+            }
 
     # ----------------------------------------------------------------------
     # Helper methods
@@ -466,7 +531,140 @@ class PathTrackerWindow(QDialog):
 
     def on_weather_clicked(self, weather_val, checked):
         self.change_weather(weather_val)
-    
+
+    def update_row_states(self):
+        for state in self.row_states:
+            btn = state['button']
+            if state['caught_state'] == 'check':
+                btn.setText("✓")
+            elif state['caught_state'] in ('1','2','3'):
+                btn.setText(f"({state['caught_state']})")
+            else:
+                btn.setText("")
+
+            if state['locked']:
+                time_val = state['stored_time']
+                weather_val = state['stored_weather']
+            else:
+                time_val = self.current_time
+                weather_val = self.current_weather
+
+            time_icon = self.get_time_icon(time_val)
+            weather_icon = self.get_weather_icon(weather_val)
+            state['time_item'].setData(Qt.DecorationRole, time_icon)
+            state['weather_item'].setData(Qt.DecorationRole, weather_icon)
+            state['time_item'].setToolTip(f"Time: {time_val}")
+            state['weather_item'].setToolTip(f"Weather: {weather_val}")
+
+            # Background color
+            if state['locked'] and state['caught_state'] is not None:
+                for col in range(self.path_table.columnCount()):
+                    item = self.path_table.item(state['row_i'], col)
+                    if item:
+                        item.setBackground(QColor(35, 55, 75))
+            else:
+                for col in range(self.path_table.columnCount()):
+                    item = self.path_table.item(state['row_i'], col)
+
+    def renumber_step_buttons(self, advance):
+        """Set button numbers (1), (2), etc. for uncaught rows in given step."""
+        step_rows = [s for s in self.row_states if s['advance'] == advance and s['caught_state'] is None]
+        # Order by idx_in_step (natural order)
+        step_rows.sort(key=lambda s: s['idx_in_step'])
+        for i, state in enumerate(step_rows, start=1):
+            state['caught_state'] = str(i)
+        # For rows already caught, leave as 'check'
+        self.update_row_states()
+
+    def update_done_button_state(self):
+        if self.current_step_advance is None:
+            self.btn_done.setEnabled(False)
+            return
+        needed = self.step_spawn_counts.get(self.current_step_advance, 0)
+        caught = self.step_caught_counts.get(self.current_step_advance, 0)
+        self.btn_done.setEnabled(caught == needed)
+
+    def on_caught_clicked(self, row_i):
+        state = self.row_states[row_i]
+        if state['locked'] or state['caught_state'] == 'check':
+            return
+        if state['advance'] != self.current_step_advance:
+            self.flash_path_step()
+            return
+
+        # Mark as caught (check)
+        state['caught_state'] = 'check'
+        state['locked'] = True
+        state['stored_time'] = self.current_time
+        state['stored_weather'] = self.current_weather
+        self.step_caught_counts[state['advance']] += 1
+
+        # Renumber remaining uncaught rows in this step
+        self.renumber_step_buttons(self.current_step_advance)
+        self.update_row_states()
+        self.update_done_button_state()
+
+    def flash_path_step(self):
+        """Make the current step in the path display blink briefly."""
+        original_text = self.path_display_label.text()
+        # Highlight the current step number in red
+        parts = [str(step) for step in self.path]
+        idx = self.current_step_advance - (len(self.pre_path) if not self.allow_other_starts else 0)
+        if 0 <= idx < len(parts):
+            parts[idx] = f'<span style="background-color: red; color: white;">{parts[idx]}</span>'
+        blink_text = " → ".join(parts)
+        self.path_display_label.setText(blink_text)
+        QTimer.singleShot(500, lambda: self.path_display_label.setText(original_text))
+
+    def on_done(self):
+        if not self.btn_done.isEnabled():
+            return
+        # Move to next step
+        advances = sorted([adv for adv in self.step_spawn_counts if adv >= 0])
+        current_idx = advances.index(self.current_step_advance)
+        if current_idx + 1 < len(advances):
+            self.current_step_advance = advances[current_idx + 1]
+            self.renumber_step_buttons(self.current_step_advance)
+            self.update_done_button_state()
+            # Update path display highlight to new step
+            self.update_path_display(self.path, self.current_step_advance - (len(self.pre_path) if not self.allow_other_starts else 0))
+        else:
+            # No next step – maybe close or show completion message
+            self.btn_done.setEnabled(False)
+
+    def on_undo(self):
+        # Move to previous step
+        advances = sorted([adv for adv in self.step_spawn_counts if adv >= 0])
+        current_idx = advances.index(self.current_step_advance)
+        if current_idx - 1 >= 0:
+            prev_adv = advances[current_idx - 1]
+            # Reset all rows from current step onward (including current)
+            for state in self.row_states:
+                if state['advance'] >= self.current_step_advance:
+                    state['locked'] = False
+                    state['caught_state'] = None
+                    self.step_caught_counts[state['advance']] = 0
+            self.current_step_advance = prev_adv
+            self.renumber_step_buttons(self.current_step_advance)
+            self.update_done_button_state()
+            self.update_path_display(self.path, self.current_step_advance - (len(self.pre_path) if not self.allow_other_starts else 0))
+        self.flash_button(self.btn_undo)
+
+    def on_reset(self):
+        # Reset all rows with advance >= 0 (keep negative advances locked)
+        for state in self.row_states:
+            if state['advance'] >= 0:
+                state['locked'] = False
+                state['caught_state'] = None
+                self.step_caught_counts[state['advance']] = 0
+        advances = sorted([adv for adv in self.step_spawn_counts if adv >= 0])
+        if advances:
+            self.current_step_advance = advances[0]
+            self.renumber_step_buttons(self.current_step_advance)
+            self.update_done_button_state()
+            self.update_path_display(self.path, self.current_step_advance - (len(self.pre_path) if not self.allow_other_starts else 0))
+        self.flash_button(self.btn_reset)
+
     def change_time(self, time_val):
         self.current_time = time_val
         if not self._initializing:
@@ -477,67 +675,6 @@ class PathTrackerWindow(QDialog):
         if not self._initializing:
             self.recalculate()
 
-    def update_row_states(self):
-        for state in self.row_states:
-            # Update button text
-            btn = state['button']
-            if state['caught_state'] == 'check':
-                btn.setText("✓")
-            elif state['caught_state'] in ('1','2','3'):
-                btn.setText(f"({state['caught_state']})")
-            else:
-                btn.setText("")
-
-            # Determine time and weather to display
-            if state['locked']:
-                time_val = state['stored_time']
-                weather_val = state['stored_weather']
-            else:
-                time_val = self.current_time
-                weather_val = self.current_weather
-
-            # Set icons
-            time_icon = self.get_time_icon(time_val)
-            weather_icon = self.get_weather_icon(weather_val)
-            state['time_item'].setIcon(time_icon if time_icon else QIcon())
-            state['weather_item'].setIcon(weather_icon if weather_icon else QIcon())
-            # Optionally set tooltips
-            state['time_item'].setToolTip(f"Time: {time_val}")
-            state['weather_item'].setToolTip(f"Weather: {weather_val}")
-
-            # Set row background color if locked (caught)
-            if state['locked'] and state['caught_state'] is not None:
-                for col in range(self.path_table.columnCount()):
-                    item = self.path_table.item(state['row_i'], col)
-                    if item:
-                        item.setBackground(QColor(35, 55, 75))
-            else:
-                # Reset background
-                for col in range(self.path_table.columnCount()):
-                    item = self.path_table.item(state['row_i'], col)
-                    #if item:
-                        #item.setBackground(QColor(255, 255, 255))
-
-    def on_caught_clicked(self, row_i):
-        state = self.row_states[row_i]
-        if state['locked']:
-            return  # already locked, cannot change
-        # Cycle caught_state: None -> '1' -> '2' -> '3' -> 'check' -> None
-        cycle = [None, '1', '2', '3', 'check']
-        current = state['caught_state']
-        idx = cycle.index(current) if current in cycle else 0
-        next_state = cycle[(idx + 1) % len(cycle)]
-        state['caught_state'] = next_state
-        if next_state is not None:
-            # Lock the row and store current weather/time
-            state['locked'] = True
-            state['stored_time'] = self.current_time
-            state['stored_weather'] = self.current_weather
-        else:
-            # Unlock? According to spec, once caught it stays caught. But we allow toggling off.
-            state['locked'] = False
-        self.update_row_states()
-
     def recalculate(self):
         self.run_simulation()
 
@@ -545,13 +682,3 @@ class PathTrackerWindow(QDialog):
         original_style = button.styleSheet()
         button.setStyleSheet("background-color: lightblue;")
         QTimer.singleShot(200, lambda: button.setStyleSheet(original_style))
-
-    def on_reset(self):
-        self.flash_button(self.btn_reset)
-        # TODO: actual reset logic
-
-    def on_undo(self):
-        self.flash_button(self.btn_undo)
-
-    def on_done(self):
-        self.flash_button(self.btn_done)
