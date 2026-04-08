@@ -130,6 +130,7 @@ class ResultTableWidget(QTableWidget):
         self.initial_spawns = 0
         self.area = None
         self.allow_other_starts = False
+        self.spawn_counts = ()
 
     def context_menu_handler(self, pos):
         menu = QMenu(self)
@@ -179,6 +180,7 @@ class ResultTableWidget(QTableWidget):
             weather,
             time_val,
             self.species_info,
+            self.spawn_counts,
             self.initial_spawns,
             self.area,
             self.allow_other_starts,
