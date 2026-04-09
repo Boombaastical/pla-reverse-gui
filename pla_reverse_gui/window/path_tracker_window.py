@@ -50,7 +50,7 @@ class PathTableWidget(QTableWidget):
         # Optional: hide columns 0-2
         for i in range(3):
             self.setColumnHidden(i, True)
-        delegate = IconDelegate(self, icon_size=32)
+        delegate = IconDelegate(self, icon_size=24)
         self.setItemDelegateForColumn(4, delegate)  # Time column (index 4)
         self.setItemDelegateForColumn(5, delegate)  # Weather column (index 5)
         self.setMinimumHeight(500)
@@ -92,8 +92,26 @@ class PathTrackerWindow(QDialog):
         self.current_weather = weather
         self.current_time = time
 
+        # Normalize sentinel time values to a valid LATime value for simulation
+        if self.current_time in (TIME_DAYTIME, TIME_ANYTIME):
+            self.current_time = LATime.DAWN.value
+        # If "any weather" (NONE or not in area list), default to first area weather
+        if self.area is not None and self.area in AREA_WEATHERS:
+            area_weathers = AREA_WEATHERS[self.area]
+            if area_weathers and not any(w.value == self.current_weather for w in area_weathers):
+                self.current_weather = area_weathers[0].value
+
+        if allow_other_starts:
+            self.step_correction = 0
+        else:
+            self.step_correction = len(pre_path)
+
+        self.current_step = self.step_correction
+
         # persistent storage: row_index -> dict
         self.stored_rows = {}
+        self.current_ko_count = 0
+        self.caught_index = 0
 
         # per‑simulation metadata
         self.row_advance = []      # index -> advance
@@ -372,7 +390,6 @@ class PathTrackerWindow(QDialog):
                 item = self.path_table.item(row_i, col)
                 if item:
                     item.setBackground(QColor(35,55,75))
-            print(f"Row: {row_i}, Stored values: {stored}")
 
         # --- lock negative advances and last advance ---
         if self.row_advance:
@@ -408,31 +425,14 @@ class PathTrackerWindow(QDialog):
                         if item:
                             item.setBackground(QColor(35,55,75))
 
-        # --- determine current step ---
-        first_non_neg = min((a for a in self.step_ko_counts if a >= 0), default=None)
-        self.current_step = 0
-        if first_non_neg is not None:
-            for adv in sorted(self.step_ko_counts.keys()):
-                if adv < 0:
-                    continue
-                step_idx = adv - first_non_neg
-                total = self.step_ko_counts[adv]
-                caught = sum(1 for r in self.step_rows[adv] 
-                             if r in self.stored_rows and self.stored_rows[r].get('caught_number') == step_idx)
-                if caught < total:
-                    self.current_step = step_idx
-                    break
-            else:
-                self.current_step = max(adv - first_non_neg for adv in self.step_ko_counts if adv >= 0)
-
         self.renumber_step_buttons()
         self.update_done_button_state()
-        if first_non_neg is not None:
-            self.update_path_display(self.path, self.current_step)
+        self.update_path_display(self.path, self.current_step)
 
     # ----------------------------------------------------------------------
     # Helper methods
     # ----------------------------------------------------------------------
+
     def get_row_values(self, row_i):
         """Return list of text values for columns 6..15 (visible data)."""
         values = []
@@ -450,49 +450,31 @@ class PathTrackerWindow(QDialog):
                     btn.setText("")
                     btn.setShortcut(0)  # remove shortcut
 
+        number_of_buttons = 0
         if self.spawn_counts[0] == -1:
             # Non‑variable spawner (regular multispawner, MO, MMO)
-            # Numbers 1..max_spawn_count are fixed to the first max_spawn_count rows.
-            for i in range(1, self.max_spawn_count + 1):
-                row_i = i - 1
-                if row_i >= self.path_table.rowCount():
-                    break
-                if row_i not in self.stored_rows:
-                    btn = self.path_table.cellWidget(row_i, 3)
-                    if btn:
-                        btn.setText(f"({i})")
-                        if i <= 9:
-                            shortcut = getattr(Qt, f"Key_{i}")
-                            btn.setShortcut(shortcut)
+            # Numbers 1..max_spawn_count are always the same
+            number_of_buttons = self.max_spawn_count - self.current_ko_count
         else:
-            # Variable spawner – step‑based numbering
-            first_non_neg = min((a for a in self.step_ko_counts if a >= 0), default=None)
-            if first_non_neg is None:
-                return
-            cur_adv = first_non_neg + self.current_step
-            if cur_adv not in self.step_rows:
-                return
-            if self.current_step >= len(self.spawn_counts):
-                return
-            target = self.spawn_counts[self.current_step]
-            # Rows in this step, ordered by their natural order (idx_in_step)
-            step_rows = sorted(self.step_rows[cur_adv], key=lambda r: self.row_idx_in_step[r])
-            # Assign numbers to the first 'target' uncaught rows in this step
-            assigned = 0
-            for r in step_rows:
-                if r not in self.stored_rows and assigned < target:
-                    assigned += 1
-                    btn = self.path_table.cellWidget(r, 3)
-                    if btn:
-                        btn.setText(f"({assigned})")
-                        if assigned <= 9:
-                            shortcut = getattr(Qt, f"Key_{assigned}")
-                            btn.setShortcut(shortcut)
-                elif r not in self.stored_rows:
-                    # Extra rows in this step (beyond target) remain unnumbered
-                    btn = self.path_table.cellWidget(r, 3)
-                    if btn:
-                        btn.setText("")
+            number_of_buttons = self.comp_spawn_counts[self.current_step + self.step_correction] - self.current_ko_count
+
+        uncaught = []
+        for row in range(self.path_table.rowCount()):
+            if row not in self.stored_rows:
+                uncaught.append(row)
+            if len(uncaught) == number_of_buttons:
+                break
+
+        for counter, i in enumerate(uncaught, start=1):
+            row_i = i
+            if row_i >= self.path_table.rowCount():
+                break
+            if row_i not in self.stored_rows:
+                btn = self.path_table.cellWidget(row_i, 3)
+                if btn:
+                    btn.setText(f"({counter})")
+                    shortcut = getattr(Qt, f"Key_{counter}")
+                    btn.setShortcut(shortcut)
 
     def update_done_button_state(self):
         first = min((a for a in self.step_ko_counts if a >= 0), default=None)
@@ -506,27 +488,38 @@ class PathTrackerWindow(QDialog):
 
     def on_caught_clicked(self, row_i):
         if row_i in self.stored_rows:
+            print(f"Is in the list!")
+            self.current_ko_count -= 1
+            print(f"Selected row: {row_i}, {self.stored_rows[row_i]}")
+            btn = self.path_table.cellWidget(row_i, 3)
+            btn.setText("("+btn.text()[1]+")")
+            del self.stored_rows[row_i]
             return
-        adv = self.row_advance[row_i]
-        first = min((a for a in self.step_ko_counts if a >= 0), default=None)
-        if adv < 0:
+        max_ko_count = self.path[self.current_step]
+        if self.current_ko_count >= max_ko_count:
             return
-        step_idx = adv - first
-        if step_idx != self.current_step:
-            self.flash_path_step()
-            return
+        
+        print(f"Is not in the list!")
+        
+        self.current_ko_count += 1
+        self.caught_index += 1
+
         btn = self.path_table.cellWidget(row_i, 3)
-        current_text = btn.text() if btn else ""
-        self.stored_rows[row_i] = {
-            'locked': False,
-            'caught_number': step_idx,
-            'button_text': current_text,
-            'stored_time': self.current_time,
-            'stored_weather': self.current_weather,
-            'col_values': self.get_row_values(row_i),
-        }
+        btn_text = btn.text()
+        if row_i not in self.stored_rows:
+            self.stored_rows[row_i] = {
+                'locked': False,
+                'caught_number': self.caught_index,
+                'button_text': "✓",
+                'stored_time': self.current_time,
+                'stored_weather': self.current_weather,
+                'col_values': self.get_row_values(row_i),
+            }
+
         if btn:
-            btn.setText("✓")
+            btn.setText(btn_text + " ✓")
+            shortcut = getattr(Qt, f"Key_{btn_text[1]}")
+            btn.setShortcut(shortcut)
         time_item = self.path_table.item(row_i, 4)
         weather_item = self.path_table.item(row_i, 5)
         if time_item:
@@ -538,28 +531,26 @@ class PathTrackerWindow(QDialog):
             if item:
                 item.setBackground(QColor(35,55,75))
         self.update_done_button_state()
+        for idx, row in self.stored_rows.items():
+            print(f"Index {idx}: {row}")
+        print(f"Row i: {row_i}")
 
     def on_done(self):
-        if not self.btn_done.isEnabled():
-            self.flash_path_step()
-            return
-        first = min((a for a in self.step_ko_counts if a >= 0), default=None)
-        if first is None:
-            return
-        cur_adv = first + self.current_step
+        cur_adv = self.current_step
         for r in self.step_rows.get(cur_adv, []):
             if r in self.stored_rows and not self.stored_rows[r].get('locked', False):
                 self.stored_rows[r]['locked'] = True
+                self.stored_rows[r]['button_text'] = "✓"
                 for col in range(self.path_table.columnCount()):
                     item = self.path_table.item(r, col)
                     if item:
                         item.setBackground(QColor(35,55,75))
         self.current_step += 1
-        next_adv = first + self.current_step
-        if next_adv not in self.step_ko_counts:
+        if self.current_step not in self.step_ko_counts:
             self.current_step -= 1
             self.btn_done.setEnabled(False)
         else:
+            self.current_ko_count = 0
             self.renumber_step_buttons()
             self.update_done_button_state()
             self.update_path_display(self.path, self.current_step)
@@ -646,6 +637,7 @@ class PathTrackerWindow(QDialog):
 
     def update_path_display(self, path_tuple, idx):
         parts = [str(s) for s in path_tuple]
-        if 0 <= idx < len(parts):
-            parts[idx] = f"<big><b>{parts[idx]}</b></big>"
+        display_idx = idx
+        if 0 <= display_idx < len(parts):
+            parts[display_idx] = f'<big><b><span style="color:orange;">{parts[display_idx]}</span></b></big>'
         self.path_display_label.setText(f"Path: {' → '.join(parts)}")

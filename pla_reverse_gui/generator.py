@@ -422,7 +422,6 @@ def generate_standard(
     fixed_rng = Xoroshiro128PlusRejection(0, 0)
 
     queue = []
-    print(f"Allow other starts: {allow_other_starts}")
     if starting_path[0] == -1:
         if spawn_count == 1:
             # single spawners always start by catching two consecutive mons
