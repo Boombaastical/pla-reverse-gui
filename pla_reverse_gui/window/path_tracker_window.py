@@ -24,7 +24,7 @@ class PathTableWidget(QTableWidget):
         ("0xAdvance", 0),   # hidden, not used
         ("StepInAdv", 0),   # hidden, not used
         ("Locked", 0),      # hidden, not used
-        ("Caught", 60),
+        ("Caught", 80),
         ("Time", 80),
         ("Weather", 80),
         ("Advances", 90),
@@ -65,8 +65,8 @@ class IconDelegate(QStyledItemDelegate):
         if icon and isinstance(icon, QIcon):
             rect = option.rect
             pixmap = icon.pixmap(self.icon_size, self.icon_size)
-            x = rect.x() + (rect.width() - pixmap.width()) // 2
-            y = rect.y() + (rect.height() - pixmap.height()) // 2
+            x = rect.x() + (rect.width() - pixmap.width()) // 2 + 10
+            y = rect.y() + (rect.height() - pixmap.height()) // 2 + 12
             painter.drawPixmap(x, y, pixmap)
         else:
             super().paint(painter, option, index)
@@ -92,6 +92,9 @@ class PathTrackerWindow(QDialog):
         self.current_weather = weather
         self.current_time = time
 
+        self.last_advance_time = time
+        self.last_advance_weather = weather
+
         # Normalize sentinel time values to a valid LATime value for simulation
         if self.current_time in (TIME_DAYTIME, TIME_ANYTIME):
             self.current_time = LATime.DAWN.value
@@ -109,15 +112,18 @@ class PathTrackerWindow(QDialog):
         self.current_step = self.step_correction
 
         # persistent storage: row_index -> dict
-        self.stored_rows = {}
-        self.current_ko_count = 0
-        self.caught_index = 0
-
-        # per‑simulation metadata
-        self.row_advance = []      # index -> advance
-        self.row_idx_in_step = []  # index -> idx_in_step
-        self.step_ko_counts = {}   # advance -> total rows
-        self.step_rows = {}           # advance -> list of row indices
+        self.stored_rows = {}                       # If the user did not select to allow other starts, stores all rows that are considered to be caught pokemon (initial catches)
+        self.last_advance_conditions = {}           # The last advance mons (the resulting mons from the path) stored time and weather to help the user be reminded of them
+        self.current_ko_count = 0                   # The current KO count of mons at any point in time at that step
+        self.caught_index = 0                       # Order of the pokemon caught
+        self.initialize_mon_number = 0              # Index of the initial mons that need to be stored
+        self.initializing = True                    # Simple bool to stop any function after initializing
+        self.col_idx = 0                            # Column index for storing the time and weather of the last mons
+        self.initial_number_to_store = 0
+        if not allow_other_starts:
+            for sc in self.pre_path:
+                    self.caught_index += sc
+                    self.initial_number_to_store += sc
 
         self.setWindowTitle("Path Tracker " + path_to_string(path))
         self.main_layout = QVBoxLayout(self)
@@ -228,10 +234,10 @@ class PathTrackerWindow(QDialog):
     # ----------------------------------------------------------------------
     def run_simulation(self):
         self.path_table.setRowCount(0)
-        self.row_advance.clear()
-        self.row_idx_in_step.clear()
-        self.step_ko_counts.clear()
-        self.step_rows.clear()
+        print()
+        print("At the start of simulation")
+        for index, row in self.stored_rows.items():
+                print(f"Index after: {index} Stored row: {row}")
 
         current_encounter_table = self.encounter_table
         group_rng = Xoroshiro128PlusRejection(self.seed)
@@ -333,10 +339,13 @@ class PathTrackerWindow(QDialog):
                 # Time (col4) and Weather (col5) items
                 time_item = QTableWidgetItem()
                 weather_item = QTableWidgetItem()
+                advance_item = QTableWidgetItem()
                 time_item.setText("")
                 weather_item.setText("")
+                advance_item.setText(str(advance))
                 self.path_table.setItem(row_i, 4, time_item)
                 self.path_table.setItem(row_i, 5, weather_item)
+                self.path_table.setItem(row_i, 0, advance_item)
 
                 # visible columns start at col6
                 row_data = (
@@ -355,10 +364,7 @@ class PathTrackerWindow(QDialog):
                     self.path_table.setItem(row_i, j, QTableWidgetItem(val))
 
                 # store metadata
-                self.row_advance.append(display_adv)
-                self.row_idx_in_step.append(idx_in_step)
-                self.step_ko_counts[display_adv] = self.step_ko_counts.get(display_adv, 0) + 1
-                self.step_rows.setdefault(display_adv, []).append(row_i)
+                self.store_initial_rows(advance)
 
                 # connect button
                 caught_btn.clicked.connect(partial(self.on_caught_clicked, row_i))
@@ -391,47 +397,38 @@ class PathTrackerWindow(QDialog):
                 if item:
                     item.setBackground(QColor(35,55,75))
 
-        # --- lock negative advances and last advance ---
-        if self.row_advance:
-            max_adv = max(self.row_advance)
-            for row_i, adv in enumerate(self.row_advance):
-                if adv < 0 and row_i not in self.stored_rows:
-                    self.stored_rows[row_i] = {
-                        'locked': True,
-                        'caught_number': -1,
-                        'button_text': "✓",
-                        'stored_time': self.current_time,
-                        'stored_weather': self.current_weather,
-                        'col_values': self.get_row_values(row_i),
-                    }
-                    btn = self.path_table.cellWidget(row_i, 3)
-                    if btn:
-                        btn.setText("✓")
-                    for col in range(self.path_table.columnCount()):
-                        item = self.path_table.item(row_i, col)
-                        if item:
-                            item.setBackground(QColor(35,55,75))
-                elif adv == max_adv and row_i not in self.stored_rows:
-                    self.stored_rows[row_i] = {
-                        'locked': True,
-                        'caught_number': None,
-                        'button_text': "",
-                        'stored_time': self.current_time,
-                        'stored_weather': self.current_weather,
-                        'col_values': self.get_row_values(row_i),
-                    }
-                    for col in range(self.path_table.columnCount()):
-                        item = self.path_table.item(row_i, col)
-                        if item:
-                            item.setBackground(QColor(35,55,75))
-
         self.renumber_step_buttons()
         self.update_done_button_state()
         self.update_path_display(self.path, self.current_step)
+        self.update_last_advance_weather()
+        self.initializing = False
+        self.initialize_mon_number = 0
 
     # ----------------------------------------------------------------------
     # Helper methods
     # ----------------------------------------------------------------------
+    def store_initial_rows(self, adv):
+        if not self.initializing:
+            return
+        if not self.allow_other_starts:
+            if self.initialize_mon_number < self.initial_number_to_store:
+                self.stored_rows[self.col_idx] = {
+                        'locked': True,
+                        'caught_number': self.initialize_mon_number,
+                        'button_text': "✓",
+                        'stored_time': self.current_time,
+                        'stored_weather': self.current_weather,
+                        'col_values': self.get_row_values(self.col_idx),
+                    }
+        last_advance_number = len(self.path)
+        if adv == last_advance_number:
+            self.last_advance_conditions[self.col_idx] = {
+                'advance': last_advance_number,
+                'stored_time': self.last_advance_time,
+                'stored_weather': self.last_advance_weather,
+            }
+        self.col_idx += 1
+        self.initialize_mon_number += 1
 
     def get_row_values(self, row_i):
         """Return list of text values for columns 6..15 (visible data)."""
@@ -477,35 +474,20 @@ class PathTrackerWindow(QDialog):
                     btn.setShortcut(shortcut)
 
     def update_done_button_state(self):
-        first = min((a for a in self.step_ko_counts if a >= 0), default=None)
-        if first is None:
-            self.btn_done.setEnabled(False)
-            return
-        cur_adv = first + self.current_step
-        total = self.step_ko_counts.get(cur_adv, 0)
-        caught = sum(1 for r in self.step_rows.get(cur_adv, []) if r in self.stored_rows)
-        self.btn_done.setEnabled(caught == total)
+        current_ko_count_necessary = self.path[self.current_step]
+        print(f"Current KO count necessary: {current_ko_count_necessary}, Path: {self.path}, Current step: {self.current_step}")
+        self.btn_done.setEnabled(self.current_ko_count == current_ko_count_necessary)
 
     def on_caught_clicked(self, row_i):
         if row_i in self.stored_rows:
-            print(f"Is in the list!")
             self.current_ko_count -= 1
-            print(f"Selected row: {row_i}, {self.stored_rows[row_i]}")
-            btn = self.path_table.cellWidget(row_i, 3)
-            btn.setText("("+btn.text()[1]+")")
+            self.toggle_caught_button(True, row_i)
             del self.stored_rows[row_i]
             return
         max_ko_count = self.path[self.current_step]
         if self.current_ko_count >= max_ko_count:
             return
-        
-        print(f"Is not in the list!")
-        
-        self.current_ko_count += 1
-        self.caught_index += 1
 
-        btn = self.path_table.cellWidget(row_i, 3)
-        btn_text = btn.text()
         if row_i not in self.stored_rows:
             self.stored_rows[row_i] = {
                 'locked': False,
@@ -516,37 +498,73 @@ class PathTrackerWindow(QDialog):
                 'col_values': self.get_row_values(row_i),
             }
 
-        if btn:
-            btn.setText(btn_text + " ✓")
-            shortcut = getattr(Qt, f"Key_{btn_text[1]}")
-            btn.setShortcut(shortcut)
-        time_item = self.path_table.item(row_i, 4)
-        weather_item = self.path_table.item(row_i, 5)
-        if time_item:
-            time_item.setData(Qt.DecorationRole, self.get_time_icon(self.current_time))
-        if weather_item:
-            weather_item.setData(Qt.DecorationRole, self.get_weather_icon(self.current_weather))
-        for col in range(self.path_table.columnCount()):
-            item = self.path_table.item(row_i, col)
-            if item:
-                item.setBackground(QColor(35,55,75))
+        self.current_ko_count += 1
+        self.caught_index += 1
+        self.toggle_caught_button(False, row_i)
         self.update_done_button_state()
-        for idx, row in self.stored_rows.items():
-            print(f"Index {idx}: {row}")
-        print(f"Row i: {row_i}")
+
+    def toggle_caught_button(self, enabled, row):
+        btn = self.path_table.cellWidget(row, 3)
+        time_item = self.path_table.item(row, 4)
+        weather_item = self.path_table.item(row, 5)
+
+        if enabled:
+            # Remove the ✓ mark
+            btn_text = btn.text()
+            btn_number = btn_text[1]
+            btn.setText("(" + btn_number + ")")
+            shortcut = getattr(Qt, f"Key_{btn_number}")
+            btn.setShortcut(shortcut)
+
+            # Remove the time and weather icons
+            if time_item:
+                time_item.setData(Qt.DecorationRole, None)
+            if weather_item:
+                weather_item.setData(Qt.DecorationRole, None)
+
+            # Remove any background
+            for col in range(self.path_table.columnCount()):
+                item = self.path_table.item(row, col)
+                if item:
+                    item.setBackground(Qt.NoBrush)
+            
+        else:
+            # Add the ✓ mark
+            btn_text = btn.text()
+            btn_number = btn_text[1]
+            btn.setText(btn_text + " ✓")
+
+            # Add the time and weather icons
+            if time_item:
+                time_item.setData(Qt.DecorationRole, self.get_time_icon(self.current_time))
+            if weather_item:
+                weather_item.setData(Qt.DecorationRole, self.get_weather_icon(self.current_weather))
+
+            # Add the background color
+            for col in range(self.path_table.columnCount()):
+                item = self.path_table.item(row, col)
+                if item:
+                    item.setBackground(QColor(35,55,75))
+
+        # And reassign the shortcut in any case
+        shortcut = getattr(Qt, f"Key_{btn_number}")
+        btn.setShortcut(shortcut)
 
     def on_done(self):
-        cur_adv = self.current_step
-        for r in self.step_rows.get(cur_adv, []):
-            if r in self.stored_rows and not self.stored_rows[r].get('locked', False):
-                self.stored_rows[r]['locked'] = True
-                self.stored_rows[r]['button_text'] = "✓"
+        # Change to ✓ and locked for all rows in the stored_rows
+        for r in self.stored_rows:
+            self.stored_rows[r]['locked'] = True
+            self.stored_rows[r]['button_text'] = "✓"
+            for row_i in self.stored_rows:   # row_i is the row index
+                btn = self.path_table.cellWidget(row_i, 3)
+                btn.setText("✓")
+                btn.setShortcut(0)
                 for col in range(self.path_table.columnCount()):
-                    item = self.path_table.item(r, col)
+                    item = self.path_table.item(row_i, col)
                     if item:
                         item.setBackground(QColor(35,55,75))
         self.current_step += 1
-        if self.current_step not in self.step_ko_counts:
+        if self.current_step > len(self.path):
             self.current_step -= 1
             self.btn_done.setEnabled(False)
         else:
@@ -556,22 +574,21 @@ class PathTrackerWindow(QDialog):
             self.update_path_display(self.path, self.current_step)
 
     def on_undo(self):
-        first = min((a for a in self.step_ko_counts if a >= 0), default=None)
-        if first is None:
-            return
-        to_remove = [r for r, data in self.stored_rows.items() if data.get('caught_number') is not None and data['caught_number'] >= self.current_step]
+        to_remove = [r for r, data in self.stored_rows.items() if data.get('caught_number') is not None and data['caught_number'] >= self.current_step and data['caught_number'] >= self.initial_number_to_store]
         for r in to_remove:
             del self.stored_rows[r]
-        if self.current_step > 0:
+        if self.current_step > self.step_correction:
             self.current_step -= 1
-        self.run_simulation()
+            self.run_simulation()
+            self.current_ko_count = 0
 
     def on_reset(self):
-        to_remove = [r for r, data in self.stored_rows.items() if data.get('caught_number') is not None and data['caught_number'] >= 0]
+        to_remove = [r for r, data in self.stored_rows.items() if data.get('caught_number') is not None and data['caught_number'] >= self.initial_number_to_store]
         for r in to_remove:
             del self.stored_rows[r]
-        self.current_step = 0
+        self.current_step = self.step_correction
         self.run_simulation()
+        self.current_ko_count = 0
 
     def change_time(self, time_val):
         self.current_time = time_val
@@ -592,7 +609,6 @@ class PathTrackerWindow(QDialog):
     def flash_path_step(self):
         original = self.path_display_label.text()
         parts = [str(s) for s in self.path]
-        first = min((a for a in self.step_ko_counts if a >= 0), default=0)
         idx = self.current_step  # because step index = advance - first
         if 0 <= idx < len(parts):
             parts[idx] = f'<span style="background-color:red;color:white;">{parts[idx]}</span>'
@@ -604,6 +620,21 @@ class PathTrackerWindow(QDialog):
         orig = button.styleSheet()
         button.setStyleSheet("background-color: lightblue;")
         QTimer.singleShot(200, lambda: button.setStyleSheet(orig))
+
+    def update_last_advance_weather(self):
+        for condition in self.last_advance_conditions.values():
+            adv = condition['advance']
+            time = condition['stored_time']
+            weather = condition['stored_weather']
+            for row in range(self.path_table.rowCount()):
+                item = self.path_table.item(row, 0)
+                if item is not None and int(item.text()) == int(adv):
+                    time_item = self.path_table.item(row, 4)
+                    weather_item = self.path_table.item(row, 5)
+                    if time_item:
+                        time_item.setData(Qt.DecorationRole, self.get_time_icon(time))
+                    if weather_item:
+                        weather_item.setData(Qt.DecorationRole, self.get_weather_icon(weather))
 
     # ----------------------------------------------------------------------
     # Icon helpers
@@ -636,8 +667,7 @@ class PathTrackerWindow(QDialog):
         return QIcon(self.get_icon_path(fname)) if fname else None
 
     def update_path_display(self, path_tuple, idx):
-        parts = [str(s) for s in path_tuple]
-        display_idx = idx
-        if 0 <= display_idx < len(parts):
-            parts[display_idx] = f'<big><b><span style="color:orange;">{parts[display_idx]}</span></b></big>'
+        parts = [str(s) for s in path_tuple] + ["Result"]
+        if 0 <= idx < len(parts):
+            parts[idx] = f'<big><b><span style="color:orange;">{parts[idx]}</span></b></big>'
         self.path_display_label.setText(f"Path: {' → '.join(parts)}")
