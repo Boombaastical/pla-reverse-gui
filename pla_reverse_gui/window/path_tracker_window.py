@@ -24,7 +24,7 @@ class PathTableWidget(QTableWidget):
         ("0xAdvance", 0),   # hidden, not used
         ("StepInAdv", 0),   # hidden, not used
         ("Locked", 0),      # hidden, not used
-        ("Caught", 80),
+        ("Caught", 70),
         ("Time", 80),
         ("Weather", 80),
         ("Advances", 90),
@@ -53,8 +53,8 @@ class PathTableWidget(QTableWidget):
         delegate = IconDelegate(self, icon_size=24)
         self.setItemDelegateForColumn(4, delegate)  # Time column (index 4)
         self.setItemDelegateForColumn(5, delegate)  # Weather column (index 5)
-        self.setMinimumHeight(500)
-        self.setMinimumWidth(900)
+        self.setMinimumHeight(300)
+        self.setMinimumWidth(750)
 
 class IconDelegate(QStyledItemDelegate):
     def __init__(self, parent=None, icon_size=28):
@@ -77,7 +77,6 @@ class PathTrackerWindow(QDialog):
                  species_info, spawn_counts, initial_spawns=0, area=None, allow_other_starts=False,
                  first_wave_count=0):
         super().__init__(parent)
-        # store parameters
         self.encounter_table = encounter_table
         self.second_wave_encounter_table = second_wave_encounter_table
         self.seed = seed
@@ -132,6 +131,10 @@ class PathTrackerWindow(QDialog):
         self.main_layout = QVBoxLayout(self)
         self.path_table = PathTableWidget()
         self._initializing = True
+
+        # Hide time and weather columns when it is a MO/MMO
+        self.path_table.setColumnHidden(4, max_spawn_count > 3)
+        self.path_table.setColumnHidden(5, max_spawn_count > 3)
 
         # ---------- build top widgets (time/weather) ----------
         top_widget = QWidget()
@@ -274,16 +277,26 @@ class PathTrackerWindow(QDialog):
                 count_vals = (self.initial_spawns,) + self.pre_path + self.spawn_counts
                 current_spawn_count = self.initial_spawns
         else:
-            # For regular multispawners or MO/MMO mons, the pre-path is already the initial mons that spawn,
-            # so we don't need to add the initial spawns to it
-
-            if self.allow_other_starts:
-                full_sequence = self.pre_path + self.path
+            # For regular multispawners or MO/MMO mons, the pre-path is the initial mons that spawn.
+            if self.is_mo:
+                # MO: prepend the initial 4-spawn as a visible batch so it appears in the table.
+                # The RNG naturally starts at seed, so no skip needed — processing 4 pokemon here
+                # then calling re_init afterwards is exactly equivalent to the old skip.
+                full_sequence = (np.uint8(4),) + self.pre_path + self.path
             else:
                 full_sequence = self.pre_path + self.path
 
         pre_len = len(self.pre_path)
-        index_start_modifier = pre_len if not self.allow_other_starts else 0
+        if self.is_mo:
+            # +1 for the initial 4-spawn batch prepended above.
+            # For allow_other_starts=True: initial at display_adv=0, path at 1+.
+            # For allow_other_starts=False (pre_len=3): initial at -4, pre_path at -3..-1, path at 0.
+            index_start_modifier = pre_len + 1
+            # effective_pre_len: advances before this are shown with empty path column
+            effective_pre_len = pre_len + 1
+        else:
+            index_start_modifier = pre_len if not self.allow_other_starts else 0
+            effective_pre_len = pre_len
 
         for advance, spawn_count in enumerate(full_sequence):
             is_ghost = False
@@ -299,8 +312,12 @@ class PathTrackerWindow(QDialog):
                 is_ghost = True
 
             # build displayed path
-            if advance < pre_len:
+            if advance < effective_pre_len:
                 current_path = ()
+            elif self.is_mo:
+                # Show interactive path progress: path elements processed so far
+                interactive_step = advance - effective_pre_len
+                current_path = self.path[:interactive_step + 1]
             else:
                 conditional = len(self.pre_path) - 1 if len(self.pre_path) > 1 else 1
                 current_path = full_sequence[1 : advance + conditional]
@@ -368,7 +385,23 @@ class PathTrackerWindow(QDialog):
 
                 # Caught button (col 3)
                 caught_btn = QPushButton()
-                caught_btn.setFixedSize(40,25)
+                caught_btn.setFixedSize(70,30)
+                caught_btn.setStyleSheet("""
+                    QPushButton {
+                        background: transparent;
+                        border: none;
+                        color: palette(text);
+                        text-align: center;
+                        outline: none;
+                        border-radius: 0px;
+                    }
+                    QPushButton:hover {
+                        background: rgba(255, 255, 255, 20);
+                    }
+                    QPushButton:pressed {
+                        background: rgba(255, 255, 255, 40);
+                    }
+                """)
                 self.path_table.setCellWidget(row_i, 3, caught_btn)
 
                 # Time (col4) and Weather (col5) items
@@ -447,10 +480,18 @@ class PathTrackerWindow(QDialog):
         if type == 'reset':
             self.caught_index = 0
             # Lock pre-path rows for fixed starts and for MO (pre-setup catches)
+            if self.is_mo and not self.allow_other_starts:
+                # The initial 4-spawn rows are always locked for the default-start case
+                self.initial_number_to_store += 4
             if not self.allow_other_starts:
                 for sc in self.pre_path:
                     self.caught_index += sc
                     self.initial_number_to_store += sc
+            # For is_mo allow_other_starts=False, align caught_index so interactive catches
+            # start at initial_number_to_store (not just sum(pre_path)), otherwise on_undo/on_reset
+            # cannot distinguish pre-locked rows from interactive ones.
+            if self.is_mo and not self.allow_other_starts:
+                self.caught_index = self.initial_number_to_store
         if type == 'undo':
             self.caught_index -= self.path[self.current_step]
 
@@ -507,9 +548,21 @@ class PathTrackerWindow(QDialog):
                 # pre_path catches are already done; path[:current_step] are interactive catches done.
                 if self.current_step < len(self.path):
                     step_path_val = self.path[self.current_step]
-                    if step_path_val == 255 or step_path_val > 10:
-                        # Clear Wave spawns 4 from second wave; Ghost actions show 0 catchable slots
-                        number_of_buttons = 4 if step_path_val == 255 else 0
+                    if step_path_val > 10:
+                        # Ghost or Clear Wave: no new visible pokemon spawn.
+                        # Buttons = remaining visible pokemon from previous batch
+                        # = (field before prev catches) - prev catches.
+                        if self.current_step > 0:
+                            prev_step_val = self.path[self.current_step - 1]
+                            prev_actual_kos = prev_step_val - 10 if (prev_step_val > 10 and prev_step_val != 255) else prev_step_val
+                            prev_total = sum(self.pre_path) + sum(
+                                (v - 10 if (v > 10 and v != 255) else v)
+                                for v in self.path[:self.current_step - 1]
+                            )
+                            prev_field = min(4, self.first_wave_count - prev_total)
+                            number_of_buttons = max(0, prev_field - prev_actual_kos)
+                        else:
+                            number_of_buttons = min(4, self.first_wave_count)
                     else:
                         total_caught = sum(self.pre_path) + sum(self.path[:self.current_step])
                         number_of_buttons = min(4, self.first_wave_count - total_caught)
@@ -556,6 +609,25 @@ class PathTrackerWindow(QDialog):
                     shortcut = getattr(Qt, f"Key_{counter}")
                     btn.setShortcut(shortcut)
 
+    def _step_ko_necessary(self, step):
+        """Return the number of catches required to complete a given path step."""
+        val = self.path[step]
+        if val > 10 and val != 255:
+            return val - 10   # ghost: actual catch count encoded as val-10
+        elif val == 255:
+            # Clear Wave: all remaining visible pokemon must be caught/KO'd.
+            # Compute using the same formula as renumber_step_buttons for ghost/clearwave.
+            if step > 0:
+                prev_step_val = self.path[step - 1]
+                prev_actual_kos = prev_step_val - 10 if (prev_step_val > 10 and prev_step_val != 255) else prev_step_val
+                prev_total = sum(self.pre_path) + sum(
+                    (v - 10 if (v > 10 and v != 255) else v) for v in self.path[:step - 1]
+                )
+                prev_field = min(4, self.first_wave_count - prev_total)
+                return max(0, prev_field - prev_actual_kos)
+            return min(4, self.first_wave_count)
+        return val
+
     def on_caught_clicked(self, row_i):
         """Adds or remove the check mark to the caught button, and stores the row temporarily without lock"""
         if self.is_flashing:
@@ -565,7 +637,7 @@ class PathTrackerWindow(QDialog):
             self.toggle_caught_button(True, row_i)
             del self.stored_rows[row_i]
             return
-        max_ko_count = self.path[self.current_step]
+        max_ko_count = self._step_ko_necessary(self.current_step) if self.is_mo else self.path[self.current_step]
         if self.current_ko_count >= max_ko_count:
             self.flash_path_step()
             return
@@ -637,7 +709,7 @@ class PathTrackerWindow(QDialog):
         """Locks all the rows inside the stored rows (including those that were not locked) and proceeds to the next step"""
         if self.is_flashing:
             return
-        current_ko_count_necessary = self.path[self.current_step]
+        current_ko_count_necessary = self._step_ko_necessary(self.current_step) if self.is_mo else self.path[self.current_step]
         if self.current_ko_count != current_ko_count_necessary:
             self.flash_path_step()
         else:
@@ -743,7 +815,15 @@ class PathTrackerWindow(QDialog):
                         weather_item.setData(Qt.DecorationRole, self.get_weather_icon(weather))
 
     def update_path_display(self, path_tuple, idx):
-        parts = [str(s) for s in path_tuple] + ["Result"]
+        def label(n):
+            if n < 10:
+                return str(n)
+            elif n == 255:
+                return "Clear Wave"
+            elif n < 20:
+                return f"Ghost {n - 10}"
+            return "Invalid"
+        parts = [label(s) for s in path_tuple] + ["Result"]
         if 0 <= idx <= len(parts):
             parts[idx] = f'<big><b><span style="color:orange;">{parts[idx]}</span></b></big>'
         self.path_display_label.setText(f"Path: {' → '.join(parts)}")

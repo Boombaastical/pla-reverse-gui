@@ -44,6 +44,15 @@ class MapWindow(QWidget):
         LAArea.ALABASTER_ICELANDS: "alabastericelands",
     }
 
+    MAP_DISPLAY_NAMES: dict[LAArea, str] = {
+        LAArea.OBSIDIAN_FIELDLANDS: "Obsidian Fieldlands",
+        LAArea.CRIMSON_MIRELANDS: "Crimson Mirelands",
+        LAArea.COBALT_COASTLANDS: "Cobalt Coastlands",
+        LAArea.SEASIDE_HOLLOW: "Seaside Hollow",
+        LAArea.CORONET_HIGHLANDS: "Coronet Highlands",
+        LAArea.ALABASTER_ICELANDS: "Alabaster Icelands",
+    }
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("PLA Seed Finder")
@@ -80,7 +89,8 @@ class MapWindow(QWidget):
         self.location_combobox = QComboBox()
         self.location_combobox.currentIndexChanged.connect(self.select_map)
         for map_id, name in self.MAP_NAMES.items():
-            self.location_combobox.addItem(name, map_id)
+            display_name = self.MAP_DISPLAY_NAMES.get(map_id, name)
+            self.location_combobox.addItem(display_name, map_id)
         self.spawner_combobox = QComboBox()
         self.spawner_combobox.currentIndexChanged.connect(self.spawner_combobox_changed)
         self.first_wave_combobox = QComboBox()

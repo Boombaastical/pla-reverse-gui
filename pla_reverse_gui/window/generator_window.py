@@ -26,12 +26,14 @@ from qtpy.QtWidgets import (
     QComboBox,
     QCheckBox,
     QPushButton,
-    QTableWidgetItem,
     QSpinBox,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
+    QTableWidgetItem,
 )
 from qtpy.QtGui import QRegularExpressionValidator, QIcon, QPainter, QPixmap, QColor
 from qtpy import QtCore
-from qtpy.QtCore import QThread, Signal, Qt, QSettings
+from qtpy.QtCore import QThread, Signal, Qt, QSettings, QSize
 
 from pathlib import Path
 
@@ -47,6 +49,22 @@ from .eta_progress_bar import ETAProgressBar
 
 TIME_DAYTIME = 100
 TIME_ANYTIME = 101
+
+class NoIndentDelegate(QStyledItemDelegate):
+    def paint(self, painter, option, index):
+        # Remove any decoration role (icon/checkmark)
+        option.decorationSize = QSize(0, 0)
+        option.features &= ~QStyleOptionViewItem.HasDecoration
+        # Draw the text only
+        super().paint(painter, option, index)
+
+    def sizeHint(self, option, index):
+        # Return size without decoration column
+        text = index.data(Qt.DisplayRole)
+        metrics = option.fontMetrics
+        width = metrics.horizontalAdvance(text) + 8  # small padding
+        height = metrics.height() + 4
+        return QSize(width, height)
 
 def compute_result_count(max_spawn_count: int, max_path_length: int, allow_other_starts: bool) -> int:
     """Calculate the total amount of results to be generated for a given spawner, max path length and if the user allows other starting paths"""
@@ -275,7 +293,8 @@ class GeneratorWindow(QDialog):
             self.initial_spawn_box = QComboBox()
             self.initial_spawn_box.addItems(initial_spawn_options)
             initial_spawn_layout.addWidget(self.initial_spawn_box)
-            
+            self.initial_spawn_box.setItemDelegate(NoIndentDelegate())
+
             spawn_count_layout = QVBoxLayout()
             starting_path_label = QLabel("Spawn Count Values:")
             spawn_count_layout.addWidget(starting_path_label)
@@ -806,6 +825,10 @@ class GeneratorWindow(QDialog):
         self.result_table.initial_spawns = initial_spawns
         self.result_table.allow_other_starts = self.allow_other_starts_checkbox.isChecked()
         self.result_table.first_wave_count = self.first_wave_spawn_count.value() if self.spawner.is_mass_outbreak else 0
+        
+        # Remove the time and weather items if it is an MO/MMO
+        self.result_table.setColumnHidden(2, self.spawner.max_spawn_count > 3)
+        self.result_table.setColumnHidden(3, self.spawner.max_spawn_count > 3)
 
     def add_result(self, row: tuple, group_tuple: tuple, result_id: int):
         (
@@ -900,13 +923,14 @@ class GeneratorWindow(QDialog):
             self.result_table.setItem(row_i, j, item)
 
         # Apply background color to entire row based on root group parity
-        root_parity = group_tuple[0] % 2
-        if root_parity == 1:   # color odd root groups
-            bg_color = QColor(35, 55, 75)
-            for col in range(self.result_table.columnCount()):
-                item = self.result_table.item(row_i, col)
-                if item:
-                    item.setBackground(bg_color)
+        if self.chain_results_filter.isChecked():
+            root_parity = group_tuple[0] % 2
+            if root_parity == 1:   # color odd root groups
+                bg_color = QColor(35, 55, 75)
+                for col in range(self.result_table.columnCount()):
+                    item = self.result_table.item(row_i, col)
+                    if item:
+                        item.setBackground(bg_color)
 
         self.id_to_weather[result_id] = {weather_val}
         self.id_to_time[result_id] = {time_val}

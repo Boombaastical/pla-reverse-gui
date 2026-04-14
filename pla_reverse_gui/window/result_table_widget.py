@@ -133,6 +133,9 @@ class ResultTableWidget(QTableWidget):
         self.spawn_counts = ()
         self.first_wave_count = 0
 
+        self.setColumnHidden(2, self.max_spawn_count > 3)
+        self.setColumnHidden(3, self.max_spawn_count > 3)
+
     def context_menu_handler(self, pos):
         menu = QMenu(self)
         menu.addAction(self.action_open_path)
@@ -156,8 +159,12 @@ class ResultTableWidget(QTableWidget):
 
         spawn_counts = (-1,)
         if self.max_spawn_count == 4:
-            # MO/MMO: 2 batches were silently pre-advanced before path tracking starts.
-            pre_path = (1, 1)
+            if self.allow_other_starts:
+                # Full path from batch 1 — no pre-catches to lock.
+                pre_path = ()
+            else:
+                # 3 singles pre-caught after initial 4-spawn; path starts from batch 4.
+                pre_path = (1, 1, 1)
         elif self.min_spawn_count != self.max_spawn_count:
             full_path = string_to_path(path_text)
             if self.initial_spawns == 1:

@@ -77,10 +77,17 @@ def generate_mass_outbreak(
     # ghost_count: available G-action slots remaining (MaxAlive-1 = 3 initially, decremented by G actions
     #   AND by batch_ghosts so that state.Ghost = 3 - ghost_count stays correct for seed advancement).
 
-    # Default start: assume player pre-caught 3 consecutive singles before we search.
-    queue.append(
-        ([np.uint8(1)], first_wave_count - 4 - 3, 3, second_wave_count, advance_seed(advance_seed(seed, 1), 1), 1, 0)
-    )
+    # Default start: assume player pre-caught 3 consecutive singles after the initial 4-spawn.
+    # Advance past initial 4-spawn (advance_seed(seed,4)), then 3 singles (3x advance_seed(...,1)).
+    s3 = advance_seed(advance_seed(advance_seed(advance_seed(seed, 4), 1), 1), 1)
+    queue_rem = first_wave_count - 4 - 3  # reserve remaining after 4-spawn + 3 pre-catches
+    for kos in range(1, 5):
+        batch_ghosts = max(0, kos - queue_rem)
+        new_ghost = 3 - batch_ghosts
+        new_queue = max(0, queue_rem - kos)
+        queue.append(
+            ([np.uint8(kos)], new_queue, new_ghost, second_wave_count, s3, kos, batch_ghosts)
+        )
 
     if allow_other_starts:
         # Also search from batch 1 (first respawn after the initial 4-spawn).
