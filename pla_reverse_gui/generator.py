@@ -34,6 +34,7 @@ def advance_seed(seed: np.uint64, ko_count: int) -> np.uint64:
 @numba.njit(nogil=True)
 def generate_mass_outbreak(
     seed: np.uint64,
+    allow_other_starts: bool,
     first_wave_count: int,
     second_wave_count: int,
     first_wave_table: EncounterAreaLA,
@@ -62,35 +63,59 @@ def generate_mass_outbreak(
     fixed_rng = Xoroshiro128PlusRejection(0, 0)
     queue = []
 
-    # outbreaks always start by catching 3 consecutive singles (seed is relative to the last 2 so only advance twice)
+    # Queue tuple: (ko_path, first_wave_count, ghost_count, second_wave_count, group_seed, actual_spawn, batch_ghosts)
+    #
+    # actual_spawn: RNG slot pairs consumed from group_seed this round (= Dead slots filled = kos for KO actions).
+    #   Seed advances by advance_seed(group_seed, actual_spawn) regardless of how many are real vs ghost.
+    #   For KO:  actual_spawn = kos  (Dead = kos even when queue < kos; short queue → batch ghost dummies).
+    #   For Gk:  actual_spawn = 3 - ghost_count  (= state.Ghost after action; drives GetGroupSeed advance).
+    #   For CR:  actual_spawn = 4  (bonus wave always fills 4 slots).
+    #
+    # batch_ghosts: leading slot-pairs to skip during pokemon generation (dummy entries before real spawns).
+    #   = max(0, kos - first_wave_count_before_action).
+    #
+    # ghost_count: available G-action slots remaining (MaxAlive-1 = 3 initially, decremented by G actions
+    #   AND by batch_ghosts so that state.Ghost = 3 - ghost_count stays correct for seed advancement).
+
+    # Default start: assume player pre-caught 3 consecutive singles before we search.
     queue.append(
-        ([np.uint8(1)], first_wave_count - 4 - 3, 3, second_wave_count, advance_seed(advance_seed(seed, 1), 1))
+        ([np.uint8(1)], first_wave_count - 4 - 3, 3, second_wave_count, advance_seed(advance_seed(seed, 1), 1), 1, 0)
     )
+
+    if allow_other_starts:
+        # Also search from batch 1 (first respawn after the initial 4-spawn).
+        # Covers all paths regardless of how many were pre-caught.
+        s_batch2 = advance_seed(seed, 4)
+        for kos in range(1, 5):
+            batch_ghosts_init = max(0, kos - (first_wave_count - 4))
+            new_ghost_init = 3 - batch_ghosts_init
+            new_queue_init = max(0, first_wave_count - 4 - kos)
+            queue.append(
+                ([np.uint8(kos)], new_queue_init, new_ghost_init, second_wave_count, s_batch2, kos, batch_ghosts_init)
+            )
 
     # TODO: label actions, track aggressive/passive/oblivious & account for them
     while len(queue) != 0 and parent_data[1] == 0:
         item = queue.pop()
         # increment progress counter
         atomic_add(parent_data, 0, 1)
-        ko_path, first_wave_count, ghost_count, second_wave_count, group_seed = item
+        ko_path, first_wave_count, ghost_count, second_wave_count, group_seed, actual_spawn, batch_ghosts = item
         current_table = first_wave_table if first_wave_count != -1 else second_wave_table
         # TODO: rip out pokemon generation
         group_rng.re_init(group_seed)
         is_clear_wave = ko_path[-1] == 255
         is_ghost = not is_clear_wave and ko_path[-1] > 10
-        # new round always spawns 4 pokemon
-        spawn_count = 4 if is_clear_wave else 3 - ghost_count if is_ghost else ko_path[-1]
-        for _ in range(spawn_count):
+        for slot_idx in range(actual_spawn):
             generator_rng.re_init(group_rng.next())
             group_rng.next()
+            # Skip G1/G2/G3 ghost-action rounds entirely, and skip leading batch-ghost dummy slots
+            if is_ghost or slot_idx < batch_ghosts:
+                continue
             slot: SlotLA = current_table.calc_slot(
                 generator_rng.next() * 5.421010862427522e-20,
                 np.int64(LATime.DAY),
                 np.int64(LAWeather.SUNNY),  # 1/2**64
             )
-            # don't return ghosts as results
-            if is_ghost:
-                continue
             gender_ratio, shiny_rolls, filtered_species = species_info[
                 (slot.species, slot.form)
             ]
@@ -170,45 +195,62 @@ def generate_mass_outbreak(
             results.append(pokemon)
             # TODO: level rand?
 
-        for kos in range(1, min(5, first_wave_count + 1)):
-            new_item = (
-                ko_path + [np.uint8(kos)],
-                first_wave_count - kos,
-                ghost_count,
-                second_wave_count,
-                advance_seed(group_seed, spawn_count)
-            )
-            queue.append(new_item)
-        # ghost spawns
-        if first_wave_count == 0 and second_wave_count != 0:
+        next_seed = advance_seed(group_seed, actual_spawn)
+        if first_wave_count > 0:
+            # Queue has pokemon left: kos catches trigger a respawn batch of kos slots total.
+            # If kos > first_wave_count, the excess slots are batch-ghost dummies at the front.
+            for kos in range(1, 5):
+                batch_ghosts_new = max(0, kos - first_wave_count)
+                new_ghost_count = ghost_count - batch_ghosts_new
+                new_queue = max(0, first_wave_count - kos)
+                queue.append((
+                    ko_path + [np.uint8(kos)],
+                    new_queue,
+                    new_ghost_count,
+                    second_wave_count,
+                    next_seed,
+                    kos,
+                    batch_ghosts_new
+                ))
+        elif first_wave_count == 0 and second_wave_count != 0:
+            # Queue empty: can despawn ghosts (G1/G2/G3) or clear the wave (CR=255).
             if ghost_count != 0:
                 for kos in range(1, min(ghost_count + 1, 4)):
-                    new_item = (
+                    new_ghost_count = ghost_count - kos
+                    # spawn_count for ghost item = state.Ghost after action = 3 - new_ghost_count
+                    queue.append((
                         ko_path + [np.uint8(10 + kos)],
                         first_wave_count,
-                        ghost_count - kos,
+                        new_ghost_count,
                         second_wave_count,
-                        advance_seed(group_seed, spawn_count)
-                    )
-                    queue.append(new_item)
-            new_item = (
+                        next_seed,
+                        3 - new_ghost_count,
+                        0
+                    ))
+            queue.append((
                 ko_path + [np.uint8(255)],
                 -1,
                 ghost_count,
                 second_wave_count - 4,
-                advance_seed(group_seed, spawn_count)
-            )
-            queue.append(new_item)
+                next_seed,
+                4,
+                0
+            ))
         elif first_wave_count == -1:
-            for kos in range(1, min(5, second_wave_count + 1)):
-                new_item = (
-                    ko_path + [np.uint8(kos)],
-                    first_wave_count,
-                    ghost_count,
-                    second_wave_count - kos,
-                    advance_seed(group_seed, spawn_count)
-                )
-                queue.append(new_item)
+            # In the bonus wave: same KO logic as the base wave.
+            if second_wave_count > 0:
+                for kos in range(1, 5):
+                    batch_ghosts_new = max(0, kos - second_wave_count)
+                    new_second_wave_count = max(0, second_wave_count - kos)
+                    queue.append((
+                        ko_path + [np.uint8(kos)],
+                        first_wave_count,
+                        ghost_count,
+                        new_second_wave_count,
+                        next_seed,
+                        kos,
+                        batch_ghosts_new
+                    ))
 
     return results
 
@@ -251,28 +293,28 @@ def generate_variable(
         queue.append(([np.uint8(1), np.uint8(1)], advance_seed(advance_seed(seed, 1), 1), 0, 1))
         if allow_other_starts:
             # Allow starting with 0->1
-            queue.append(([np.uint8(0), np.uint8(1)], advance_seed(seed, 1), 0, 1))
+            queue.append(([np.uint8(0), np.uint8(1)], advance_seed(advance_seed(seed, 1), 1), 0, 1))
             # Allow starting with 1->0
-            queue.append(([np.uint8(1), np.uint8(0)], advance_seed(seed, 1), 0, 1))
+            queue.append(([np.uint8(1), np.uint8(0)], advance_seed(advance_seed(seed, 1), 1), 0, 1))
             # Allow starting with 0->0
-            queue.append(([np.uint8(0), np.uint8(0)], seed, 0, 1))
+            queue.append(([np.uint8(0), np.uint8(0)], advance_seed(advance_seed(seed, 1), 1), 0, 1))
     # If it's 2 or 3
     elif initial_spawns == 2:
         queue.append(([np.uint8(2)], advance_seed(seed, 2), 0, 2))
         if allow_other_starts:
             # Allow starting with 1->
-            queue.append(([np.uint8(1)], advance_seed(seed, 1), 0, 2))
+            queue.append(([np.uint8(1)], advance_seed(seed, 2), 0, 2))
             # Allow starting with 0->
-            queue.append(([np.uint8(0)], seed, 0, 2))
+            queue.append(([np.uint8(0)], advance_seed(seed, 2), 0, 2))
     elif initial_spawns == 3:
         queue.append(([np.uint8(3)], advance_seed(seed, 3), 0, 3))
         if allow_other_starts:
             # Allow starting with 2->
-            queue.append(([np.uint8(2)], advance_seed(seed, 2), 0, 3))
+            queue.append(([np.uint8(2)], advance_seed(seed, 3), 0, 3))
             # Allow starting with 1->
-            queue.append(([np.uint8(1)], advance_seed(seed, 1), 0, 3))
+            queue.append(([np.uint8(1)], advance_seed(seed, 3), 0, 3))
             # Allow starting with 0->
-            queue.append(([np.uint8(0)], seed, 0, 3))
+            queue.append(([np.uint8(0)], advance_seed(seed, 3), 0, 3))
         
     initial_advances = len(queue[0][0])
     # check parent_data[1] flag each item
@@ -433,7 +475,7 @@ def generate_standard(
             queue.append(([np.uint8(2)], advance_seed(seed, spawn_count)))
 
             if allow_other_starts:
-                queue.append(([np.uint8(1)], advance_seed(seed, 1)))
+                queue.append(([np.uint8(1)], advance_seed(seed, spawn_count)))
         if spawn_count == 3:
             # triple spawners also have the option of catching the third mon
             queue.append(([np.uint8(3)], advance_seed(seed, spawn_count)))

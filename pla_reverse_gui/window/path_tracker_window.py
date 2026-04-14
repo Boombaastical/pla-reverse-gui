@@ -74,7 +74,8 @@ class IconDelegate(QStyledItemDelegate):
 class PathTrackerWindow(QDialog):
     def __init__(self, parent, encounter_table, second_wave_encounter_table, seed,
                  pre_path, path, count_values, max_spawn_count, weather, time,
-                 species_info, spawn_counts, initial_spawns=0, area=None, allow_other_starts=False):
+                 species_info, spawn_counts, initial_spawns=0, area=None, allow_other_starts=False,
+                 first_wave_count=0):
         super().__init__(parent)
         # store parameters
         self.encounter_table = encounter_table
@@ -104,7 +105,11 @@ class PathTrackerWindow(QDialog):
             if area_weathers and not any(w.value == self.current_weather for w in area_weathers):
                 self.current_weather = area_weathers[0].value
 
-        if allow_other_starts:
+        self.first_wave_count = first_wave_count
+        self.is_mo = (self.max_spawn_count == 4 and self.spawn_counts[0] == -1)
+
+        # MO/MMO: step indexing starts at 0 (path already begins at first tracked batch)
+        if allow_other_starts or self.is_mo:
             self.step_correction = 0
         else:
             self.step_correction = len(pre_path)
@@ -119,11 +124,9 @@ class PathTrackerWindow(QDialog):
         self.initialize_mon_number = 0              # Index of the initial mons that need to be stored
         self.initializing = True                    # Simple bool to stop any function after initializing
         self.col_idx = 0                            # Column index for storing the time and weather of the last mons
-        self.initial_number_to_store = 0
-        if not allow_other_starts:
-            for sc in self.pre_path:
-                    self.caught_index += sc
-                    self.initial_number_to_store += sc
+        self.initial_number_to_store = 0            # Number of initial pokemon to store and lock (0 if the user allows other starts, the number of mons in the pre-path if not)
+        self.is_flashing = False                    # Fail-safe in case the path is blinking due to doing a wrong step
+        self.update_caught_index(type='reset')
 
         self.setWindowTitle("Path Tracker " + path_to_string(path))
         self.main_layout = QVBoxLayout(self)
@@ -209,7 +212,6 @@ class PathTrackerWindow(QDialog):
         self.btn_done = QPushButton("Done (E)")
         self.btn_done.setShortcut(Qt.Key_E)
         self.btn_done.clicked.connect(self.on_done)
-        self.btn_done.setEnabled(False)
 
         button_layout = QHBoxLayout()
         button_layout.addWidget(self.btn_reset)
@@ -222,33 +224,63 @@ class PathTrackerWindow(QDialog):
         control_layout.addLayout(button_layout)
 
         self.main_layout.addWidget(top_widget)
+        # MO/MMO spawners have no weather/time variation — hide the selector row
+        if self.is_mo:
+            top_widget.hide()
         self.main_layout.addWidget(control_row)
         self.main_layout.addWidget(self.path_table)
         self.resize(sum(c[1] for c in self.path_table.COLUMNS), self.height())
 
         self._initializing = False
-        self.run_simulation()
+        self.run_simulation(scroll_back_up=True)
 
     # ----------------------------------------------------------------------
     # Simulation
     # ----------------------------------------------------------------------
-    def run_simulation(self):
+    def run_simulation(self, scroll_back_up):
+        """(Re-)Generate the list of mons for a specific path, weather and time of day"""
+        if not scroll_back_up:
+            scroll_pos = self.path_table.verticalScrollBar().value()
+        else:
+            scroll_pos = 0
         self.path_table.setRowCount(0)
-        print()
-        print("At the start of simulation")
-        for index, row in self.stored_rows.items():
-                print(f"Index after: {index} Stored row: {row}")
 
         current_encounter_table = self.encounter_table
         group_rng = Xoroshiro128PlusRejection(self.seed)
         ghost_count = 3
 
-        count_vals = self.count_values
+        count_vals = self.spawn_counts
         if count_vals[0] != -1:
-            full_sequence = (self.initial_spawns,) + self.path
-            count_vals = (self.initial_spawns,) + self.pre_path + self.count_values
+            # For variable multispawners, we need to append the initial spawns
+            # to spawn the initial mons that we got the seed from (whether the first 1 from 1->1 or 2->)
+            # The pre-path for variable multispawners already includes a pre-path, so it ends up
+            # being initial spawns (1, 2 or 3) + path (pre-path + path after the initial catches)
+            if self.allow_other_starts:
+                if self.initial_spawns == 1:
+                    count_vals = (self.initial_spawns, self.initial_spawns,) + self.pre_path + self.spawn_counts
+                    full_sequence = (self.initial_spawns, self.initial_spawns) + self.path
+                else:
+                    count_vals = (self.initial_spawns,) + self.pre_path + self.spawn_counts
+                    full_sequence = (self.initial_spawns,) + self.path
+                print()
+                print(f"Count values: {count_vals}")
+                print(f"Full sequence: {full_sequence}")
+                current_spawn_count = self.initial_spawns
+            else:
+                full_sequence = (self.initial_spawns,) + self.path
+
+                # For the count values, we also need to add the initial spawns before the pre-path and the
+                # count values so as to run an 'empty run' to spawn the first 1, 2 or 3 mons
+                count_vals = (self.initial_spawns,) + self.pre_path + self.spawn_counts
+                current_spawn_count = self.initial_spawns
         else:
-            full_sequence = self.pre_path + self.path
+            # For regular multispawners or MO/MMO mons, the pre-path is already the initial mons that spawn,
+            # so we don't need to add the initial spawns to it
+
+            if self.allow_other_starts:
+                full_sequence = self.pre_path + self.path
+            else:
+                full_sequence = self.pre_path + self.path
 
         pre_len = len(self.pre_path)
         index_start_modifier = pre_len if not self.allow_other_starts else 0
@@ -275,11 +307,14 @@ class PathTrackerWindow(QDialog):
 
             # variable multi logic
             if count_vals[0] != -1:
-                cur_spawn = count_vals[advance]
-                before = cur_spawn - spawn_count
-                next_spawn = count_vals[advance + 1]
-                generated = max(0, next_spawn - before)
-                spawn_count = generated
+                count_before_spawns = current_spawn_count - spawn_count
+                spawn_count = max(0, count_vals[advance + 1] - count_before_spawns)
+                current_spawn_count = count_before_spawns + spawn_count
+                #cur_spawn = count_vals[advance]
+                #before = cur_spawn - spawn_count
+                #next_spawn = count_vals[advance + 1]
+                #generated = max(0, next_spawn - before)
+                #spawn_count = generated
 
             for idx_in_step in range(spawn_count):
                 # ---- Pokémon generation (RNG, slot, etc.) ----
@@ -398,22 +433,36 @@ class PathTrackerWindow(QDialog):
                     item.setBackground(QColor(35,55,75))
 
         self.renumber_step_buttons()
-        self.update_done_button_state()
         self.update_path_display(self.path, self.current_step)
         self.update_last_advance_weather()
         self.initializing = False
         self.initialize_mon_number = 0
+        self.path_table.verticalScrollBar().setValue(scroll_pos)
 
     # ----------------------------------------------------------------------
     # Helper methods
     # ----------------------------------------------------------------------
+    def update_caught_index(self, type):
+        """Update the number corresponding to the order in which the pokemon was caught"""
+        if type == 'reset':
+            self.caught_index = 0
+            # Lock pre-path rows for fixed starts and for MO (pre-setup catches)
+            if not self.allow_other_starts:
+                for sc in self.pre_path:
+                    self.caught_index += sc
+                    self.initial_number_to_store += sc
+        if type == 'undo':
+            self.caught_index -= self.path[self.current_step]
+
     def store_initial_rows(self, adv):
+        """Function to store either in the locked rows either no pokemon if allowing other starts, or the number of pokemon from the pre-path"""
         if not self.initializing:
             return
         if not self.allow_other_starts:
             if self.initialize_mon_number < self.initial_number_to_store:
                 self.stored_rows[self.col_idx] = {
                         'locked': True,
+                        'advance': self.current_step,
                         'caught_number': self.initialize_mon_number,
                         'button_text': "✓",
                         'stored_time': self.current_time,
@@ -421,6 +470,8 @@ class PathTrackerWindow(QDialog):
                         'col_values': self.get_row_values(self.col_idx),
                     }
         last_advance_number = len(self.path)
+        if self.initial_spawns == 1:
+            last_advance_number += 1
         if adv == last_advance_number:
             self.last_advance_conditions[self.col_idx] = {
                 'advance': last_advance_number,
@@ -439,21 +490,53 @@ class PathTrackerWindow(QDialog):
         return values
 
     def renumber_step_buttons(self):
+        """(Re-)Number the pokemon that will spawn at this step, and assign shortcuts"""
         # Clear all button texts on rows that are not caught
         for row_i in range(self.path_table.rowCount()):
             if row_i not in self.stored_rows:
                 btn = self.path_table.cellWidget(row_i, 3)
                 if btn:
                     btn.setText("")
-                    btn.setShortcut(0)  # remove shortcut
+                    btn.setShortcut(0)
 
         number_of_buttons = 0
         if self.spawn_counts[0] == -1:
-            # Non‑variable spawner (regular multispawner, MO, MMO)
-            # Numbers 1..max_spawn_count are always the same
-            number_of_buttons = self.max_spawn_count - self.current_ko_count
+            if self.is_mo:
+                # MO/MMO field size = min(4, total_remaining).
+                # total_remaining = first_wave_count - all pokemon caught so far.
+                # pre_path catches are already done; path[:current_step] are interactive catches done.
+                if self.current_step < len(self.path):
+                    step_path_val = self.path[self.current_step]
+                    if step_path_val == 255 or step_path_val > 10:
+                        # Clear Wave spawns 4 from second wave; Ghost actions show 0 catchable slots
+                        number_of_buttons = 4 if step_path_val == 255 else 0
+                    else:
+                        total_caught = sum(self.pre_path) + sum(self.path[:self.current_step])
+                        number_of_buttons = min(4, self.first_wave_count - total_caught)
+                else:
+                    number_of_buttons = 0
+            else:
+                # Regular fixed-size multispawner: field always has max_spawn_count slots
+                number_of_buttons = self.max_spawn_count
         else:
-            number_of_buttons = self.comp_spawn_counts[self.current_step + self.step_correction] - self.current_ko_count
+            # Variable multispawner: simulate actual field size at current step.
+            # Rule: spawner will never remove extra pokemon if the dictated count
+            # drops below the actual count, but will spawn more if dictated count rises.
+            # For initial_spawns=1, the two initial catches [1,1] are one atomic unit:
+            # spawn_counts[0] applies after path[1], not path[0]. Use spawn_counts_offset=1.
+            actual = self.initial_spawns
+            spawn_counts_offset = 1 if self.initial_spawns == 1 else 0
+            for i in range(self.current_step):
+                remaining = actual - self.path[i]
+                sc_index = i - spawn_counts_offset
+                if sc_index < 0:
+                    # First of the two 1→1 initial catches: field refills to 1 inherently
+                    actual = max(1, remaining)
+                elif sc_index < len(self.spawn_counts):
+                    actual = max(self.spawn_counts[sc_index], remaining)
+                else:
+                    actual = remaining
+            number_of_buttons = actual
 
         uncaught = []
         for row in range(self.path_table.rowCount()):
@@ -473,12 +556,10 @@ class PathTrackerWindow(QDialog):
                     shortcut = getattr(Qt, f"Key_{counter}")
                     btn.setShortcut(shortcut)
 
-    def update_done_button_state(self):
-        current_ko_count_necessary = self.path[self.current_step]
-        print(f"Current KO count necessary: {current_ko_count_necessary}, Path: {self.path}, Current step: {self.current_step}")
-        self.btn_done.setEnabled(self.current_ko_count == current_ko_count_necessary)
-
     def on_caught_clicked(self, row_i):
+        """Adds or remove the check mark to the caught button, and stores the row temporarily without lock"""
+        if self.is_flashing:
+            return
         if row_i in self.stored_rows:
             self.current_ko_count -= 1
             self.toggle_caught_button(True, row_i)
@@ -486,11 +567,13 @@ class PathTrackerWindow(QDialog):
             return
         max_ko_count = self.path[self.current_step]
         if self.current_ko_count >= max_ko_count:
+            self.flash_path_step()
             return
 
         if row_i not in self.stored_rows:
             self.stored_rows[row_i] = {
                 'locked': False,
+                'advance': self.current_step,
                 'caught_number': self.caught_index,
                 'button_text': "✓",
                 'stored_time': self.current_time,
@@ -501,9 +584,9 @@ class PathTrackerWindow(QDialog):
         self.current_ko_count += 1
         self.caught_index += 1
         self.toggle_caught_button(False, row_i)
-        self.update_done_button_state()
 
     def toggle_caught_button(self, enabled, row):
+        """Switches the buttons that can be pressed to reassign the shortcut and change the text on them from '[n] ✓' to '✓'"""
         btn = self.path_table.cellWidget(row, 3)
         time_item = self.path_table.item(row, 4)
         weather_item = self.path_table.item(row, 5)
@@ -551,77 +634,100 @@ class PathTrackerWindow(QDialog):
         btn.setShortcut(shortcut)
 
     def on_done(self):
-        # Change to ✓ and locked for all rows in the stored_rows
-        for r in self.stored_rows:
-            self.stored_rows[r]['locked'] = True
-            self.stored_rows[r]['button_text'] = "✓"
-            for row_i in self.stored_rows:   # row_i is the row index
-                btn = self.path_table.cellWidget(row_i, 3)
-                btn.setText("✓")
-                btn.setShortcut(0)
-                for col in range(self.path_table.columnCount()):
-                    item = self.path_table.item(row_i, col)
-                    if item:
-                        item.setBackground(QColor(35,55,75))
-        self.current_step += 1
-        if self.current_step > len(self.path):
-            self.current_step -= 1
-            self.btn_done.setEnabled(False)
+        """Locks all the rows inside the stored rows (including those that were not locked) and proceeds to the next step"""
+        if self.is_flashing:
+            return
+        current_ko_count_necessary = self.path[self.current_step]
+        if self.current_ko_count != current_ko_count_necessary:
+            self.flash_path_step()
         else:
-            self.current_ko_count = 0
-            self.renumber_step_buttons()
-            self.update_done_button_state()
-            self.update_path_display(self.path, self.current_step)
+            # Change to ✓ and locked for all rows in the stored_rows
+            for r in self.stored_rows:
+                self.stored_rows[r]['locked'] = True
+                self.stored_rows[r]['button_text'] = "✓"
+                for row_i in self.stored_rows:   # row_i is the row index
+                    btn = self.path_table.cellWidget(row_i, 3)
+                    btn.setText("✓")
+                    btn.setShortcut(0)
+                    for col in range(self.path_table.columnCount()):
+                        item = self.path_table.item(row_i, col)
+                        if item:
+                            item.setBackground(QColor(35,55,75))
+            self.current_step += 1
+            if self.current_step > len(self.path):
+                self.current_step -= 1
+            else:
+                self.current_ko_count = 0
+                self.renumber_step_buttons()
+                self.update_path_display(self.path, self.current_step)
 
     def on_undo(self):
-        to_remove = [r for r, data in self.stored_rows.items() if data.get('caught_number') is not None and data['caught_number'] >= self.current_step and data['caught_number'] >= self.initial_number_to_store]
+        """Removes all non-locked rows and moves to the previous step"""
+        if self.is_flashing:
+            return
+        to_remove = [r for r, data in self.stored_rows.items() if data.get('caught_number') is not None and int(data['advance']) >= self.current_step - 1 and data['caught_number'] >= self.initial_number_to_store]
         for r in to_remove:
             del self.stored_rows[r]
         if self.current_step > self.step_correction:
             self.current_step -= 1
-            self.run_simulation()
             self.current_ko_count = 0
+            self.update_caught_index(type='undo')
+            self.run_simulation(scroll_back_up=False)
 
     def on_reset(self):
+        """Resets the path from the start"""
+        if self.is_flashing:
+            return
         to_remove = [r for r, data in self.stored_rows.items() if data.get('caught_number') is not None and data['caught_number'] >= self.initial_number_to_store]
         for r in to_remove:
             del self.stored_rows[r]
         self.current_step = self.step_correction
-        self.run_simulation()
         self.current_ko_count = 0
+        self.run_simulation(scroll_back_up=True)
 
     def change_time(self, time_val):
+        """Handles the changing time interaction: removes all non-locked rows and changes the time to be stored when caught"""
+        if self.is_flashing:
+            return
         self.current_time = time_val
         if not self._initializing:
             to_remove = [r for r, data in self.stored_rows.items() if not data.get('locked', False)]
             for r in to_remove:
                 del self.stored_rows[r]
-            self.run_simulation()
+            self.current_ko_count = 0
+            self.run_simulation(scroll_back_up=False)
 
     def change_weather(self, weather_val):
+        """Handles the changing time interaction: removes all non-locked rows and changes the weather to be stored when caught"""
+        if self.is_flashing:
+            return
         self.current_weather = weather_val
         if not self._initializing:
             to_remove = [r for r, data in self.stored_rows.items() if not data.get('locked', False)]
             for r in to_remove:
                 del self.stored_rows[r]
-            self.run_simulation()
+            self.current_ko_count = 0
+            self.run_simulation(scroll_back_up=False)
 
     def flash_path_step(self):
+        """When the user wants to catch more pokemon than necessary at that step or not enough, the program will display a visual indication of the path to remind the user"""
+        self.is_flashing = True
         original = self.path_display_label.text()
-        parts = [str(s) for s in self.path]
+        parts = [str(s) for s in self.path] + ['Result']
         idx = self.current_step  # because step index = advance - first
-        if 0 <= idx < len(parts):
-            parts[idx] = f'<span style="background-color:red;color:white;">{parts[idx]}</span>'
-        blink = " → ".join(parts)
-        self.path_display_label.setText(blink)
+        if 0 <= idx <= len(parts):
+            parts[idx] = f'<big><b><span style="color:red;">{parts[idx]}</span></b></big>'
+        blink = f'Path: {" → ".join(parts)}'
+        def restore():
+            self.path_display_label.setText(original)
+            self.is_flashing = False
+        QTimer.singleShot(250, lambda: self.path_display_label.setText(blink))
         QTimer.singleShot(500, lambda: self.path_display_label.setText(original))
-
-    def flash_button(self, button):
-        orig = button.styleSheet()
-        button.setStyleSheet("background-color: lightblue;")
-        QTimer.singleShot(200, lambda: button.setStyleSheet(orig))
+        QTimer.singleShot(750, lambda: self.path_display_label.setText(blink))
+        QTimer.singleShot(1000, lambda: restore())
 
     def update_last_advance_weather(self):
+        """Store the time of day and weather for the last advance (the pokemon that the user chose to search for)"""
         for condition in self.last_advance_conditions.values():
             adv = condition['advance']
             time = condition['stored_time']
@@ -635,6 +741,12 @@ class PathTrackerWindow(QDialog):
                         time_item.setData(Qt.DecorationRole, self.get_time_icon(time))
                     if weather_item:
                         weather_item.setData(Qt.DecorationRole, self.get_weather_icon(weather))
+
+    def update_path_display(self, path_tuple, idx):
+        parts = [str(s) for s in path_tuple] + ["Result"]
+        if 0 <= idx <= len(parts):
+            parts[idx] = f'<big><b><span style="color:orange;">{parts[idx]}</span></b></big>'
+        self.path_display_label.setText(f"Path: {' → '.join(parts)}")
 
     # ----------------------------------------------------------------------
     # Icon helpers
@@ -665,9 +777,3 @@ class PathTrackerWindow(QDialog):
                  'rainstorm':'weather_rainstorm.png','snowstorm':'weather_snowstorm.png','none':'weather_any.png'}
         fname = icons.get(name)
         return QIcon(self.get_icon_path(fname)) if fname else None
-
-    def update_path_display(self, path_tuple, idx):
-        parts = [str(s) for s in path_tuple] + ["Result"]
-        if 0 <= idx < len(parts):
-            parts[idx] = f'<big><b><span style="color:orange;">{parts[idx]}</span></b></big>'
-        self.path_display_label.setText(f"Path: {' → '.join(parts)}")

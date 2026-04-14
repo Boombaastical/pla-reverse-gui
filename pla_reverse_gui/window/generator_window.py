@@ -59,17 +59,18 @@ def compute_result_count(max_spawn_count: int, max_path_length: int, allow_other
         initial_value = (max_spawn_count - 1) + allow_other_starts * 1
     return initial_value * (1 - max_spawn_count**max_path_length) // (1 - max_spawn_count)
 
-def compute_result_count_variable(spawn_counts: list[int], allow_other_starts: bool) -> int:
+def compute_result_count_variable(spawn_counts: list[int], allow_other_starts: bool, initial_spawns: int) -> int:
     """
-    Count the number of internal states (where count_idx < len(spawn_counts))
-    that will be popped from the queue and trigger an atomic_add.
+    Count the number of internal states for a variable spawner.
+    spawn_counts: list of target spawn counts for each user step.
+    initial_spawns: 1, 2, or 3 (the first KO count and initial field size).
     """
     from collections import defaultdict
 
     # dp maps (last_ko, cur_spawn) -> number of states at current depth
     dp = defaultdict(int)
-    dp[(2, 2)] = 1          # root state (depth 0)
-    total_internal = 1      # root is internal
+    dp[(initial_spawns, initial_spawns)] = 1   # root state
+    total_internal = 1
 
     for depth, target in enumerate(spawn_counts):
         new_dp = defaultdict(int)
@@ -77,13 +78,20 @@ def compute_result_count_variable(spawn_counts: list[int], allow_other_starts: b
             before = cur_spawn - last_ko
             generated = max(0, target - before)
             after = before + generated
-            # children: kos = 0 .. after
             for kos in range(after + 1):
                 new_dp[(kos, after)] += count
-                # If this child is not a leaf, it will become an internal node
                 if depth + 1 < len(spawn_counts):
                     total_internal += count
         dp = new_dp
+
+    if allow_other_starts:
+        if initial_spawns == 1:
+            multiplier = 4
+        elif initial_spawns == 2:
+            multiplier = 3
+        else:  # initial_spawns == 3
+            multiplier = 4
+        total_internal *= multiplier
 
     return total_internal
 
@@ -192,7 +200,10 @@ class GeneratorWindow(QDialog):
         spawn_count_label = QLabel("Spawn Count:")
         spawn_count_label.setVisible(bool(self.spawner.is_mass_outbreak))
         self.settings_layout.addWidget(spawn_count_label, 2, )
-        self.first_wave_spawn_count, first_wave_spawn_count_widget = labled_widget("First Wave:", QSpinBox, minimum=8, maximum=10)
+        if self.has_second_wave:
+            self.first_wave_spawn_count, first_wave_spawn_count_widget = labled_widget("First Wave:", QSpinBox, minimum=8, maximum=10)
+        else:
+            self.first_wave_spawn_count, first_wave_spawn_count_widget = labled_widget("First Wave:", QSpinBox, minimum=10, maximum=15)
         first_wave_spawn_count_widget.setVisible(bool(self.spawner.is_mass_outbreak))
         self.second_wave_spawn_count, second_wave_spawn_count_widget = labled_widget("Second Wave:", QSpinBox, minimum=6, maximum=8)
         second_wave_spawn_count_widget.setVisible(self.has_second_wave)
@@ -244,7 +255,7 @@ class GeneratorWindow(QDialog):
                 slot.species
             ] = shiny_rolls_combobox
         self.allow_other_starts_checkbox = QCheckBox("Allow paths that do not start with catch-2")
-        self.allow_other_starts_checkbox.setVisible(self.spawner.max_spawn_count > 1 and not self.spawner.is_mass_outbreak)
+        self.allow_other_starts_checkbox.setVisible(self.spawner.max_spawn_count > 1)
         self.settings_layout.addWidget(self.allow_other_starts_checkbox)
         
         if is_variable:
@@ -636,7 +647,7 @@ class GeneratorWindow(QDialog):
             # "1->1" becomes 1, "2" becomes 2, "3" becomes 3
             initial_spawns = int(selected[0])
         else:
-            initial_spawns = 0
+            initial_spawns = self.spawner.max_spawn_count
             
         shiny_filter = self.shiny_filter.currentData() or 15
         alpha_filter = self.alpha_filter.checkState() == QtCore.Qt.Checked
@@ -692,7 +703,7 @@ class GeneratorWindow(QDialog):
             rep_to_times = {time_data.value: [time_data.value]}
 
         if self.spawner.is_mass_outbreak or self.spawner.min_spawn_count != self.spawner.max_spawn_count:
-            per_combo = compute_result_count_variable(starting_path, self.allow_other_starts_checkbox.isChecked())
+            per_combo = compute_result_count_variable(starting_path, self.allow_other_starts_checkbox.isChecked(), initial_spawns)
         else:
             per_combo = compute_result_count(self.spawner.max_spawn_count, advance_range.stop, self.allow_other_starts_checkbox.isChecked())
 
@@ -704,6 +715,7 @@ class GeneratorWindow(QDialog):
         if self.spawner.is_mass_outbreak:
             base_args = (
                 seed,
+                self.allow_other_starts_checkbox.isChecked(),
                 self.first_wave_spawn_count.value(),
                 self.second_wave_spawn_count.value() if self.has_second_wave else 0,
                 self.encounter_table,
@@ -793,6 +805,7 @@ class GeneratorWindow(QDialog):
         self.result_table.spawn_counts = starting_path
         self.result_table.initial_spawns = initial_spawns
         self.result_table.allow_other_starts = self.allow_other_starts_checkbox.isChecked()
+        self.result_table.first_wave_count = self.first_wave_spawn_count.value() if self.spawner.is_mass_outbreak else 0
 
     def add_result(self, row: tuple, group_tuple: tuple, result_id: int):
         (

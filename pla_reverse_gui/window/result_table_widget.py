@@ -131,6 +131,7 @@ class ResultTableWidget(QTableWidget):
         self.area = None
         self.allow_other_starts = False
         self.spawn_counts = ()
+        self.first_wave_count = 0
 
     def context_menu_handler(self, pos):
         menu = QMenu(self)
@@ -155,6 +156,7 @@ class ResultTableWidget(QTableWidget):
 
         spawn_counts = (-1,)
         if self.max_spawn_count == 4:
+            # MO/MMO: 2 batches were silently pre-advanced before path tracking starts.
             pre_path = (1, 1)
         elif self.min_spawn_count != self.max_spawn_count:
             full_path = string_to_path(path_text)
@@ -184,5 +186,6 @@ class ResultTableWidget(QTableWidget):
             self.initial_spawns,
             self.area,
             self.allow_other_starts,
+            self.first_wave_count,
         )
         path_tracker.show()
