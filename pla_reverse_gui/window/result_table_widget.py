@@ -133,9 +133,6 @@ class ResultTableWidget(QTableWidget):
         self.spawn_counts = ()
         self.first_wave_count = 0
 
-        self.setColumnHidden(2, self.max_spawn_count > 3)
-        self.setColumnHidden(3, self.max_spawn_count > 3)
-
     def context_menu_handler(self, pos):
         menu = QMenu(self)
         menu.addAction(self.action_open_path)

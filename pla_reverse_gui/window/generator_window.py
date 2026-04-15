@@ -398,6 +398,10 @@ class GeneratorWindow(QDialog):
         self.main_layout.addWidget(self.result_table)
 
         settings = QSettings("PLAReverseGUI", "Settings")
+        if settings.value("hexOrDec", False, bool):
+            self.seed_base_combobox.setCurrentIndex(1)
+        if settings.value("allowOtherStarts", False, bool):
+            self.allow_other_starts_checkbox.setChecked(True)
         if settings.value("alwaysSearchShiny", False, bool):
             shiny_type = settings.value("shinyType", 2, int)
             if shiny_type == 0:

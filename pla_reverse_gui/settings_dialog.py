@@ -20,6 +20,8 @@ class SettingsDialog(QDialog):
 
         # Load settings
         self.settings = QSettings("PLAReverseGUI", "Settings")
+        self.hexordec = self.settings.value("hexOrDec", False, bool)                        # False for Hex, True for Dec
+        self.allow_other_starts = self.settings.value("allowOtherStarts", False, bool)
         self.shiny_charm = self.settings.value("shinyCharm", False, bool)
         self.always_shiny = self.settings.value("alwaysSearchShiny", False, bool)
         self.shiny_type = self.settings.value("shinyType", 2, int)  # 0=Star,1=Square,2=Any
@@ -27,6 +29,36 @@ class SettingsDialog(QDialog):
 
         # Main layout
         layout = QVBoxLayout(self)
+
+        # Dec or Hex for the seeds
+        hexdec_label = QLabel("Hexadecimal or Decimal values for seeds:")
+        layout.addWidget(hexdec_label)
+        hexdec_widget = QWidget()
+        hexdec_layout = QHBoxLayout(hexdec_widget)
+        hexdec_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.hex_radio = QRadioButton("Hexadecimal")
+        self.dec_radio = QRadioButton("Decimal")
+
+        self.hexdec_group = QButtonGroup(self)
+        self.hexdec_group.addButton(self.hex_radio, 0)   # id 0 = Hexadecimal
+        self.hexdec_group.addButton(self.dec_radio, 1)   # id 1 = Decimal
+
+        if self.hexordec:
+            self.dec_radio.setChecked(True)
+        else:
+            self.hex_radio.setChecked(True)
+
+        hexdec_layout.addWidget(self.hex_radio)
+        hexdec_layout.addWidget(self.dec_radio)
+        hexdec_layout.addStretch()
+
+        layout.addWidget(hexdec_widget)
+
+        # Always allow other starts?
+        self.allow_other_starts_check = QCheckBox("Always allow other starts (other than 2-> or 1->1->1 for MO/MMO's)")
+        self.allow_other_starts_check.setChecked(self.allow_other_starts)
+        layout.addWidget(self.allow_other_starts_check)
 
         # Shiny search checkbox
         self.shiny_search_check = QCheckBox("Always search for shiny Pokemon")
@@ -213,6 +245,8 @@ class SettingsDialog(QDialog):
         self.settings.setValue("alwaysSearchShiny", self.shiny_search_check.isChecked())
         self.settings.setValue("shinyType", self.shiny_type_group.checkedId())
         self.settings.setValue("alwaysSearchAlpha", self.alpha_search_check.isChecked())
+        self.settings.setValue("hexOrDec", self.dec_radio.isChecked())
+        self.settings.setValue("allowOtherStarts", self.allow_other_starts_check.isChecked())
 
         for row in range(self.table.rowCount()):
             item = self.table.item(row, 0)
