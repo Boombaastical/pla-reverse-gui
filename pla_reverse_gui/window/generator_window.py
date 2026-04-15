@@ -133,6 +133,8 @@ class GeneratorWindow(QDialog):
         encounter_table: EncounterAreaLA,
         second_wave_encounter_table: EncounterAreaLA,
         area: LAArea,
+        is_a_mass_outbreak: bool = False,
+        is_a_massive_mass_outbreak: bool = False,
     ) -> None:
         super().__init__(parent)
         self.area = area
@@ -141,6 +143,8 @@ class GeneratorWindow(QDialog):
         self.encounter_table = encounter_table
         self.second_wave_encounter_table = second_wave_encounter_table
         self.has_second_wave = self.second_wave_encounter_table is not None
+        self.is_a_mass_outbreak = is_a_mass_outbreak
+        self.is_a_massive_mass_outbreak = is_a_massive_mass_outbreak
         self.is_mmo = spawner.encounter_table_id != self.encounter_table.table_id
         is_variable = spawner.min_spawn_count != spawner.max_spawn_count
         self.basculin_gender = {
@@ -218,15 +222,16 @@ class GeneratorWindow(QDialog):
         spawn_count_label = QLabel("Spawn Count:")
         spawn_count_label.setVisible(bool(self.spawner.is_mass_outbreak))
         self.settings_layout.addWidget(spawn_count_label, 2, )
-        if self.has_second_wave:
-            self.first_wave_spawn_count, first_wave_spawn_count_widget = labled_widget("First Wave:", QSpinBox, minimum=8, maximum=10)
-        else:
-            self.first_wave_spawn_count, first_wave_spawn_count_widget = labled_widget("First Wave:", QSpinBox, minimum=10, maximum=15)
-        first_wave_spawn_count_widget.setVisible(bool(self.spawner.is_mass_outbreak))
-        self.second_wave_spawn_count, second_wave_spawn_count_widget = labled_widget("Second Wave:", QSpinBox, minimum=6, maximum=8)
-        second_wave_spawn_count_widget.setVisible(self.has_second_wave)
-        self.settings_layout.addWidget(first_wave_spawn_count_widget)
-        self.settings_layout.addWidget(second_wave_spawn_count_widget)
+        if self.spawner.is_mass_outbreak:
+            if self.is_a_mass_outbreak:
+                self.first_wave_spawn_count, first_wave_spawn_count_widget = labled_widget("First Wave:", QSpinBox, minimum=10, maximum=15)
+            elif self.is_a_massive_mass_outbreak:
+                self.first_wave_spawn_count, first_wave_spawn_count_widget = labled_widget("First Wave:", QSpinBox, minimum=8, maximum=10)
+            first_wave_spawn_count_widget.setVisible(bool(self.spawner.is_mass_outbreak))
+            self.second_wave_spawn_count, second_wave_spawn_count_widget = labled_widget("Second Wave:", QSpinBox, minimum=6, maximum=8)
+            second_wave_spawn_count_widget.setVisible(self.has_second_wave)
+            self.settings_layout.addWidget(first_wave_spawn_count_widget)
+            self.settings_layout.addWidget(second_wave_spawn_count_widget)
         advance_range_label = QLabel("Advance Range:")
         self.settings_layout.addWidget(advance_range_label)
         self.advance_range = RangeWidget(0, 20 if self.spawner.min_spawn_count > 1 else 9999)

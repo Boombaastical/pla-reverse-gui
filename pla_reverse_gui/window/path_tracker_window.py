@@ -8,13 +8,15 @@ from qtpy.QtWidgets import (
     QHBoxLayout, QVBoxLayout, QButtonGroup, QDialog, QLabel, QPushButton,
     QSizePolicy, QStyledItemDelegate, QTableWidget, QTableWidgetItem, QWidget,
 )
-from qtpy.QtGui import QIcon, QColor
+from qtpy.QtGui import QIcon, QColor, QPen
 from qtpy.QtCore import Qt, QSize, QTimer
 from pathlib import Path
 from functools import partial
 
 from ..util import calc_effort_level, get_personal_index, get_name_en, path_to_string, AREA_WEATHERS
 from ..pla_reverse_main.pla_reverse.size import calc_display_size
+
+import numbers
 
 TIME_DAYTIME = 100
 TIME_ANYTIME = 101
@@ -126,6 +128,7 @@ class PathTrackerWindow(QDialog):
         self.initial_number_to_store = 0            # Number of initial pokemon to store and lock (0 if the user allows other starts, the number of mons in the pre-path if not)
         self.is_flashing = False                    # Fail-safe in case the path is blinking due to doing a wrong step
         self.update_caught_index(type='reset')
+        self.insert_separator = [False, -1]         # Position to add the separator if there is a second wave
 
         self.setWindowTitle("Path Tracker " + path_to_string(path))
         self.main_layout = QVBoxLayout(self)
@@ -265,9 +268,6 @@ class PathTrackerWindow(QDialog):
                 else:
                     count_vals = (self.initial_spawns,) + self.pre_path + self.spawn_counts
                     full_sequence = (self.initial_spawns,) + self.path
-                print()
-                print(f"Count values: {count_vals}")
-                print(f"Full sequence: {full_sequence}")
                 current_spawn_count = self.initial_spawns
             else:
                 full_sequence = (self.initial_spawns,) + self.path
@@ -288,12 +288,15 @@ class PathTrackerWindow(QDialog):
 
         pre_len = len(self.pre_path)
         if self.is_mo:
-            # +1 for the initial 4-spawn batch prepended above.
-            # For allow_other_starts=True: initial at display_adv=0, path at 1+.
-            # For allow_other_starts=False (pre_len=3): initial at -4, pre_path at -3..-1, path at 0.
-            index_start_modifier = pre_len + 1
-            # effective_pre_len: advances before this are shown with empty path column
+            # effective_pre_len: advances 0..pre_len are all pre-path (initial spawn + pre_path batches).
             effective_pre_len = pre_len + 1
+            if self.allow_other_starts:
+                # Initial at display_adv = 0, interactive path starts at 1.
+                index_start_modifier = 0
+            else:
+                # Initial at display_adv = -pre_len (e.g. -3), last pre_path spawn at 0,
+                # interactive path starts at 1.
+                index_start_modifier = pre_len
         else:
             index_start_modifier = pre_len if not self.allow_other_starts else 0
             effective_pre_len = pre_len
@@ -302,6 +305,7 @@ class PathTrackerWindow(QDialog):
             is_ghost = False
             # special values
             if spawn_count == 255:
+                self.insert_separator[0] = True
                 spawn_count = 4
                 current_encounter_table = self.second_wave_encounter_table
             elif spawn_count > 20:
@@ -428,11 +432,26 @@ class PathTrackerWindow(QDialog):
                     f"{disp_metric[0]:.02f} m | {disp_imperial[0][0]:.00f}'{disp_imperial[0][1]:.00f}\" ({height})",
                     f"{disp_metric[1]:.02f} kg | {disp_imperial[1]:.01f} lbs ({weight})",
                 )
+                if self.insert_separator[0]:
+                    self.insert_separator = [False, row_i]
                 for j, val in enumerate(row_data, start=6):
                     self.path_table.setItem(row_i, j, QTableWidgetItem(val))
 
                 # store metadata
-                self.store_initial_rows(advance)
+                # For MO default start: only specific rows are pre-caught.
+                # Rule: from initial 4-spawn, assume player caught the LAST pokemon (idx == spawn_count-1).
+                # Respawns at advances 1..effective_pre_len-2 are each caught.
+                # The final respawn at advance effective_pre_len-1 stays in the field (not caught).
+                if self.is_mo and not self.allow_other_starts:
+                    if advance == 0:
+                        is_pre_caught = (idx_in_step == spawn_count - 1)
+                    elif advance == effective_pre_len - 1:
+                        is_pre_caught = False   # last respawn stays in field
+                    else:
+                        is_pre_caught = True    # intermediate respawns are caught
+                else:
+                    is_pre_caught = True
+                self.store_initial_rows(advance, is_pre_caught)
 
                 # connect button
                 caught_btn.clicked.connect(partial(self.on_caught_clicked, row_i))
@@ -465,12 +484,15 @@ class PathTrackerWindow(QDialog):
                 if item:
                     item.setBackground(QColor(35,55,75))
 
+        delegate = DoubleBorderDelegate(self.path_table, separator_row=self.insert_separator[1])
+        self.path_table.setItemDelegate(delegate)
         self.renumber_step_buttons()
         self.update_path_display(self.path, self.current_step)
         self.update_last_advance_weather()
         self.initializing = False
         self.initialize_mon_number = 0
         self.path_table.verticalScrollBar().setValue(scroll_pos)
+        
 
     # ----------------------------------------------------------------------
     # Helper methods
@@ -479,40 +501,53 @@ class PathTrackerWindow(QDialog):
         """Update the number corresponding to the order in which the pokemon was caught"""
         if type == 'reset':
             self.caught_index = 0
-            # Lock pre-path rows for fixed starts and for MO (pre-setup catches)
             if self.is_mo and not self.allow_other_starts:
-                # The initial 4-spawn rows are always locked for the default-start case
-                self.initial_number_to_store += 4
-            if not self.allow_other_starts:
+                # Rows stored as pre-caught: last of initial 4 (1) + intermediate pre-path (pre_len-1)
+                # = pre_len total.  The last respawn (advance == effective_pre_len-1) stays in field.
+                self.initial_number_to_store = len(self.pre_path)
+                self.caught_index = self.initial_number_to_store
+            elif not self.allow_other_starts:
                 for sc in self.pre_path:
                     self.caught_index += sc
                     self.initial_number_to_store += sc
-            # For is_mo allow_other_starts=False, align caught_index so interactive catches
-            # start at initial_number_to_store (not just sum(pre_path)), otherwise on_undo/on_reset
-            # cannot distinguish pre-locked rows from interactive ones.
-            if self.is_mo and not self.allow_other_starts:
-                self.caught_index = self.initial_number_to_store
         if type == 'undo':
-            self.caught_index -= self.path[self.current_step]
+            # For MO ghost/clear wave, path value encodes 11-14 or 255 rather than catch count.
+            if self.is_mo:
+                self.caught_index -= self._step_ko_necessary(self.current_step)
+            else:
+                self.caught_index -= self.path[self.current_step]
 
-    def store_initial_rows(self, adv):
+    def store_initial_rows(self, adv, is_pre_caught=True):
         """Function to store either in the locked rows either no pokemon if allowing other starts, or the number of pokemon from the pre-path"""
         if not self.initializing:
             return
         if not self.allow_other_starts:
-            if self.initialize_mon_number < self.initial_number_to_store:
+            if self.is_mo:
+                # For MO: only store rows that were actually pre-caught so that
+                # uncaught rows (initial 4 minus the last, and the last respawn) remain
+                # visible and are numbered by renumber_step_buttons.
+                should_store = self.col_idx in [3, 4, 5]
+            else:
+                should_store = self.initialize_mon_number < self.initial_number_to_store
+            if should_store:
                 self.stored_rows[self.col_idx] = {
                         'locked': True,
                         'advance': self.current_step,
-                        'caught_number': self.initialize_mon_number,
+                        # Use count of already-stored rows so caught_number stays 0-based
+                        # and below initial_number_to_store for undo/reset guard.
+                        'caught_number': len(self.stored_rows),
                         'button_text': "✓",
                         'stored_time': self.current_time,
                         'stored_weather': self.current_weather,
                         'col_values': self.get_row_values(self.col_idx),
                     }
-        last_advance_number = len(self.path)
-        if self.initial_spawns == 1:
-            last_advance_number += 1
+        if self.is_mo:
+            # Last advance index in full_sequence = 1 (initial) + pre_len + len(path) - 1
+            last_advance_number = len(self.pre_path) + len(self.path)
+        else:
+            last_advance_number = len(self.path)
+            if self.initial_spawns == 1:
+                last_advance_number += 1
         if adv == last_advance_number:
             self.last_advance_conditions[self.col_idx] = {
                 'advance': last_advance_number,
@@ -548,24 +583,18 @@ class PathTrackerWindow(QDialog):
                 # pre_path catches are already done; path[:current_step] are interactive catches done.
                 if self.current_step < len(self.path):
                     step_path_val = self.path[self.current_step]
+                    print()
+                    print(f"1: Step path val: {step_path_val}")
+                    print(f"Path: {self.path}")
                     if step_path_val > 10:
-                        # Ghost or Clear Wave: no new visible pokemon spawn.
-                        # Buttons = remaining visible pokemon from previous batch
-                        # = (field before prev catches) - prev catches.
-                        if self.current_step > 0:
-                            prev_step_val = self.path[self.current_step - 1]
-                            prev_actual_kos = prev_step_val - 10 if (prev_step_val > 10 and prev_step_val != 255) else prev_step_val
-                            prev_total = sum(self.pre_path) + sum(
-                                (v - 10 if (v > 10 and v != 255) else v)
-                                for v in self.path[:self.current_step - 1]
-                            )
-                            prev_field = min(4, self.first_wave_count - prev_total)
-                            number_of_buttons = max(0, prev_field - prev_actual_kos)
-                        else:
-                            number_of_buttons = min(4, self.first_wave_count)
+                        # Ghost or Clear Wave: use _mo_field_at_step which correctly handles
+                        # ghost chains (field refills after normal steps, depletes through ghost chain).
+                        number_of_buttons = self._mo_field_at_step(self.current_step)
                     else:
                         total_caught = sum(self.pre_path) + sum(self.path[:self.current_step])
-                        number_of_buttons = min(4, self.first_wave_count - total_caught)
+                        number_of_buttons = min(4, self.first_wave_count - total_caught) if total_caught < 255 else 4
+                        print()
+                        print(f"Total caught: {total_caught}, number of buttons: {number_of_buttons}")
                 else:
                     number_of_buttons = 0
             else:
@@ -609,6 +638,34 @@ class PathTrackerWindow(QDialog):
                     shortcut = getattr(Qt, f"Key_{counter}")
                     btn.setShortcut(shortcut)
 
+    def _mo_field_at_step(self, step):
+        """Return the visible catchable field size at the start of path step `step` for is_mo.
+
+        For normal steps this equals min(4, first_wave_count - total_caught_before_step).
+        For ghost/clear-wave steps, field refills normally up to the first ghost batch, then
+        each subsequent ghost step depletes it by its actual catch count (ghosts respawn
+        invisibly so the visible field shrinks with no new visible pokemon).
+        """
+        # Walk back to find the beginning of the current ghost/clear-wave chain.
+        ghost_start = step
+        while ghost_start > 0 and self.path[ghost_start - 1] > 10:
+            ghost_start -= 1
+
+        # Total actual catches before ghost_start (field refilled normally up to here).
+        actual_kos_before = sum(self.pre_path) + sum(
+            (v - 10 if (v > 10 and v != 255) else v)
+            for v in self.path[:ghost_start]
+        )
+        field = min(4, self.first_wave_count - actual_kos_before)
+
+        # Deduct each ghost step's catches (no visible respawns during the ghost chain).
+        for g in range(ghost_start, step):
+            ghost_val = self.path[g]
+            ghost_kos = ghost_val - 10 if (ghost_val > 10 and ghost_val != 255) else ghost_val
+            field = max(0, field - ghost_kos)
+
+        return field
+
     def _step_ko_necessary(self, step):
         """Return the number of catches required to complete a given path step."""
         val = self.path[step]
@@ -616,16 +673,7 @@ class PathTrackerWindow(QDialog):
             return val - 10   # ghost: actual catch count encoded as val-10
         elif val == 255:
             # Clear Wave: all remaining visible pokemon must be caught/KO'd.
-            # Compute using the same formula as renumber_step_buttons for ghost/clearwave.
-            if step > 0:
-                prev_step_val = self.path[step - 1]
-                prev_actual_kos = prev_step_val - 10 if (prev_step_val > 10 and prev_step_val != 255) else prev_step_val
-                prev_total = sum(self.pre_path) + sum(
-                    (v - 10 if (v > 10 and v != 255) else v) for v in self.path[:step - 1]
-                )
-                prev_field = min(4, self.first_wave_count - prev_total)
-                return max(0, prev_field - prev_actual_kos)
-            return min(4, self.first_wave_count)
+            return self._mo_field_at_step(step)
         return val
 
     def on_caught_clicked(self, row_i):
@@ -652,7 +700,6 @@ class PathTrackerWindow(QDialog):
                 'stored_weather': self.current_weather,
                 'col_values': self.get_row_values(row_i),
             }
-
         self.current_ko_count += 1
         self.caught_index += 1
         self.toggle_caught_button(False, row_i)
@@ -663,7 +710,7 @@ class PathTrackerWindow(QDialog):
         time_item = self.path_table.item(row, 4)
         weather_item = self.path_table.item(row, 5)
 
-        if enabled:
+        if enabled and btn is not None:
             # Remove the ✓ mark
             btn_text = btn.text()
             btn_number = btn_text[1]
@@ -717,14 +764,15 @@ class PathTrackerWindow(QDialog):
             for r in self.stored_rows:
                 self.stored_rows[r]['locked'] = True
                 self.stored_rows[r]['button_text'] = "✓"
-                for row_i in self.stored_rows:   # row_i is the row index
-                    btn = self.path_table.cellWidget(row_i, 3)
+            for row_i in self.stored_rows:
+                btn = self.path_table.cellWidget(row_i, 3)
+                if btn is not None:
                     btn.setText("✓")
                     btn.setShortcut(0)
-                    for col in range(self.path_table.columnCount()):
-                        item = self.path_table.item(row_i, col)
-                        if item:
-                            item.setBackground(QColor(35,55,75))
+                for col in range(self.path_table.columnCount()):
+                    item = self.path_table.item(row_i, col)
+                    if item:
+                        item.setBackground(QColor(35,55,75))
             self.current_step += 1
             if self.current_step > len(self.path):
                 self.current_step -= 1
@@ -806,7 +854,9 @@ class PathTrackerWindow(QDialog):
             weather = condition['stored_weather']
             for row in range(self.path_table.rowCount()):
                 item = self.path_table.item(row, 0)
-                if item is not None and int(item.text()) == int(adv):
+                if item is not None and item.text() == "Second wave spawns":
+                    continue
+                if item is not None and isinstance(adv, numbers.Number) and int(item.text()) == int(adv):
                     time_item = self.path_table.item(row, 4)
                     weather_item = self.path_table.item(row, 5)
                     if time_item:
@@ -857,3 +907,30 @@ class PathTrackerWindow(QDialog):
                  'rainstorm':'weather_rainstorm.png','snowstorm':'weather_snowstorm.png','none':'weather_any.png'}
         fname = icons.get(name)
         return QIcon(self.get_icon_path(fname)) if fname else None
+    
+class DoubleBorderDelegate(QStyledItemDelegate):
+    """Delegate that draws a double line at the bottom of a specified row."""
+    def __init__(self, parent=None, separator_row=-1):
+        super().__init__(parent)
+        self.separator_row = separator_row   # row index to highlight
+
+    def paint(self, painter, option, index):
+        # Draw the normal content first
+        super().paint(painter, option, index)
+
+        # If this is the separator row, paint a double line at the bottom
+        if index.row() == self.separator_row and self.separator_row != -1:
+            rect = option.rect
+            # Draw two parallel lines (adjust Y positions and thickness as desired)
+            pen = QPen(painter.pen())
+            pen.setWidth(1)
+            pen.setColor(QColor(120, 120, 120))   # grey
+            painter.setPen(pen)
+
+            # First line: at the very bottom of the cell
+            y1 = rect.top() - 1
+            painter.drawLine(rect.left(), y1, rect.right(), y1)
+
+            # Second line: 2 pixels above the first (so they don't merge)
+            y2 = rect.top() - 3
+            painter.drawLine(rect.left(), y2, rect.right(), y2)

@@ -511,10 +511,17 @@ class MapWindow(QWidget):
         """Open Generator for spawner"""
         spawner = self.spawner_information[self.spawner_combobox.currentIndex()]
         # is MMO
-        if spawner.is_mass_outbreak and (
+        is_mass_outbreak_only = spawner.is_mass_outbreak and (
+            np.uint64(spawner.encounter_table_id)
+            in ENCOUNTER_INFORMATION_LA[self.location_combobox.currentData() & 0xFF]
+        )
+
+        is_massive_mass_outbreak_only = spawner.is_mass_outbreak and (
             np.uint64(spawner.encounter_table_id)
             not in ENCOUNTER_INFORMATION_LA[self.location_combobox.currentData() & 0xFF]
-        ):
+        )
+
+        if is_massive_mass_outbreak_only:
             first_encounter_table = self.encounter_information[
                 np.uint64(
                     self.first_wave_combobox.currentData().first_wave_encounter_table_id
@@ -534,7 +541,7 @@ class MapWindow(QWidget):
             second_wave_encounter_table = None
         current_area = self.location_combobox.currentData() & 0xFF
         generator_window = GeneratorWindow(
-            self, spawner, first_encounter_table, second_wave_encounter_table, current_area
+            self, spawner, first_encounter_table, second_wave_encounter_table, current_area, is_mass_outbreak_only, is_massive_mass_outbreak_only
         )
         generator_window.show()
         generator_window.setFocus()
