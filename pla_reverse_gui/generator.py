@@ -288,6 +288,8 @@ def generate_variable(
     """
     if count_values[0] == -1:
         return results
+    
+    advance_correction = allow_other_starts * (2 if initial_spawns == 1 else 1)
 
     # faster to reinit rather than create new objects
     group_rng = Xoroshiro128PlusRejection(0, 0)
@@ -408,7 +410,7 @@ def generate_variable(
             if len(size_filter) != 0 and height not in size_filter:
                 continue
             pokemon = (
-                advance,
+                (advance + advance_correction),
                 ko_path,
                 (slot.species, slot.form, slot.is_alpha),
                 np.uint32(encryption_constant),
@@ -465,6 +467,8 @@ def generate_standard(
     parent_data[1]: external bool (as uint64) flag for if the search should still run (threading)
     """
     
+    advance_correction = allow_other_starts * 1
+
     # faster to reinit rather than create new objects
     group_rng = Xoroshiro128PlusRejection(0, 0)
     generator_rng = Xoroshiro128PlusRejection(0, 0)
@@ -571,7 +575,7 @@ def generate_standard(
                 if len(size_filter) != 0 and height not in size_filter:
                     continue
                 pokemon = (
-                    advance,
+                    (advance + advance_correction),
                     ko_path,
                     (slot.species, slot.form, slot.is_alpha),
                     np.uint32(encryption_constant),

@@ -583,9 +583,6 @@ class PathTrackerWindow(QDialog):
                 # pre_path catches are already done; path[:current_step] are interactive catches done.
                 if self.current_step < len(self.path):
                     step_path_val = self.path[self.current_step]
-                    print()
-                    print(f"1: Step path val: {step_path_val}")
-                    print(f"Path: {self.path}")
                     if step_path_val > 10:
                         # Ghost or Clear Wave: use _mo_field_at_step which correctly handles
                         # ghost chains (field refills after normal steps, depletes through ghost chain).
@@ -593,8 +590,6 @@ class PathTrackerWindow(QDialog):
                     else:
                         total_caught = sum(self.pre_path) + sum(self.path[:self.current_step])
                         number_of_buttons = min(4, self.first_wave_count - total_caught) if total_caught < 255 else 4
-                        print()
-                        print(f"Total caught: {total_caught}, number of buttons: {number_of_buttons}")
                 else:
                     number_of_buttons = 0
             else:
@@ -833,7 +828,18 @@ class PathTrackerWindow(QDialog):
         """When the user wants to catch more pokemon than necessary at that step or not enough, the program will display a visual indication of the path to remind the user"""
         self.is_flashing = True
         original = self.path_display_label.text()
-        parts = [str(s) for s in self.path] + ['Result']
+        original_path = [int(s) for s in self.path]
+
+        def label(n):
+            if n < 10:
+                return str(n)
+            elif n == 255:
+                return "Clear Wave"
+            elif n < 20:
+                return f"Ghost {n - 10}"
+            return "Invalid"
+        
+        parts = [label(s) for s in self.path] + ['Result']
         idx = self.current_step  # because step index = advance - first
         if 0 <= idx <= len(parts):
             parts[idx] = f'<big><b><span style="color:red;">{parts[idx]}</span></b></big>'
