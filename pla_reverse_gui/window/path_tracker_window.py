@@ -142,31 +142,50 @@ class PathTrackerWindow(QDialog):
         # ---------- build top widgets (time/weather) ----------
         top_widget = QWidget()
         top_layout = QHBoxLayout(top_widget)
+
         time_layout = QHBoxLayout()
         time_layout.addWidget(QLabel("Time:"))
-        self.btn_daytime = QPushButton()
-        self.btn_daytime.setIcon(QIcon(self.get_icon_path("time_daytime.png")))
-        self.btn_daytime.setIconSize(QSize(24,24))
-        self.btn_daytime.setToolTip("Daytime (Dawn, Day, Dusk)")
-        self.btn_daytime.setCheckable(True)
-        self.btn_daytime.toggled.connect(lambda checked: self.change_time(LATime.DAWN.value) if checked else None)
+        self.btn_morning = QPushButton()
+        self.btn_morning.setIcon(QIcon(self.get_icon_path("time_dawn.png")))
+        self.btn_morning.setIconSize(QSize(32, 32))
+        self.btn_morning.setToolTip("Morning")
+        self.btn_morning.setCheckable(True)
+        self.btn_morning.toggled.connect(lambda checked: self.change_time(LATime.DAWN.value) if checked else None)
+        self.btn_midday = QPushButton()
+        self.btn_midday.setIcon(QIcon(self.get_icon_path("time_day.png")))
+        self.btn_midday.setIconSize(QSize(32, 32))
+        self.btn_midday.setToolTip("Midday")
+        self.btn_midday.setCheckable(True)
+        self.btn_midday.toggled.connect(lambda checked: self.change_time(LATime.DAY.value) if checked else None)
         self.btn_night = QPushButton()
         self.btn_night.setIcon(QIcon(self.get_icon_path("time_night.png")))
-        self.btn_night.setIconSize(QSize(24,24))
+        self.btn_night.setIconSize(QSize(32, 32))
         self.btn_night.setToolTip("Night")
         self.btn_night.setCheckable(True)
         self.btn_night.toggled.connect(lambda checked: self.change_time(LATime.NIGHT.value) if checked else None)
         self.time_group = QButtonGroup(self)
         self.time_group.setExclusive(True)
-        self.time_group.addButton(self.btn_daytime)
+        self.time_group.addButton(self.btn_morning)
+        self.time_group.addButton(self.btn_midday)
         self.time_group.addButton(self.btn_night)
-        time_layout.addWidget(self.btn_daytime)
+        self.time_buttons = [self.btn_morning, self.btn_midday, self.btn_night]
+        time_layout.addWidget(self.btn_morning)
+        time_layout.addWidget(self.btn_midday)
         time_layout.addWidget(self.btn_night)
-        time_layout.addStretch()
+
+        # Warning label sits between time and weather buttons; always allocated (setText not hide/show)
+        self.warning_label = QLabel("")
+        self.warning_label.setStyleSheet("color: red;")
+        self.warning_label.setWordWrap(True)
+        self.warning_label.setMinimumWidth(400)
+        self._warning_timer = QTimer(self)
+        self._warning_timer.setSingleShot(True)
+        self._warning_timer.timeout.connect(lambda: self.warning_label.setText(""))
 
         weather_layout = QHBoxLayout()
         weather_layout.addWidget(QLabel("Weather:"))
         self.weather_buttons = []
+        self.weather_button_values = []
         self.weather_group = QButtonGroup(self)
         self.weather_group.setExclusive(True)
         if self.area is not None and self.area in AREA_WEATHERS:
@@ -185,22 +204,38 @@ class PathTrackerWindow(QDialog):
                 btn.toggled.connect(lambda checked, w=weather: self.change_weather(w.value) if checked else None)
                 weather_layout.addWidget(btn)
                 self.weather_buttons.append(btn)
+                self.weather_button_values.append(weather.value)
                 self.weather_group.addButton(btn)
         else:
             weather_layout.addWidget(QLabel("(unknown area)"))
         weather_layout.addStretch()
+
         top_layout.addLayout(time_layout)
+        top_layout.addWidget(self.warning_label)
         top_layout.addLayout(weather_layout)
 
+        # Normalize DUSK to DAY since there is no Dusk button
+        if self.current_time == LATime.DUSK.value:
+            self.current_time = LATime.DAY.value
+
         # initial time button check
-        if self.current_time in (LATime.DAWN.value, LATime.DAY.value, LATime.DUSK.value, TIME_DAYTIME):
-            self.btn_daytime.blockSignals(True)
-            self.btn_daytime.setChecked(True)
-            self.btn_daytime.blockSignals(False)
+        if self.current_time == LATime.DAWN.value:
+            self.btn_morning.blockSignals(True)
+            self.btn_morning.setChecked(True)
+            self.btn_morning.blockSignals(False)
+        elif self.current_time == LATime.DAY.value:
+            self.btn_midday.blockSignals(True)
+            self.btn_midday.setChecked(True)
+            self.btn_midday.blockSignals(False)
         elif self.current_time == LATime.NIGHT.value:
             self.btn_night.blockSignals(True)
             self.btn_night.setChecked(True)
             self.btn_night.blockSignals(False)
+
+        # Step baseline for variable multispawner constraint (only one of time/weather can change per step)
+        self.step_base_time = self.current_time
+        self.step_base_weather = self.current_weather
+        self.step_baselines = []
 
         # path display label
         self.path_display_label = QLabel()
@@ -773,6 +808,9 @@ class PathTrackerWindow(QDialog):
                 self.current_step -= 1
             else:
                 self.current_ko_count = 0
+                self.step_baselines.append((self.current_time, self.current_weather))
+                self.step_base_time = self.current_time
+                self.step_base_weather = self.current_weather
                 self.renumber_step_buttons()
                 self.update_path_display(self.path, self.current_step)
 
@@ -787,6 +825,13 @@ class PathTrackerWindow(QDialog):
             self.current_step -= 1
             self.current_ko_count = 0
             self.update_caught_index(type='undo')
+            if self.step_baselines:
+                self.step_baselines.pop()
+            if self.step_baselines:
+                self.step_base_time, self.step_base_weather = self.step_baselines[-1]
+            else:
+                self.step_base_time = self.current_time
+                self.step_base_weather = self.current_weather
             self.run_simulation(scroll_back_up=False)
 
     def on_reset(self):
@@ -798,12 +843,20 @@ class PathTrackerWindow(QDialog):
             del self.stored_rows[r]
         self.current_step = self.step_correction
         self.current_ko_count = 0
+        self.step_baselines.clear()
+        self.step_base_time = self.current_time
+        self.step_base_weather = self.current_weather
         self.run_simulation(scroll_back_up=True)
 
     def change_time(self, time_val):
         """Handles the changing time interaction: removes all non-locked rows and changes the time to be stored when caught"""
         if self.is_flashing:
             return
+        if self.spawn_counts[0] != -1 and not self._initializing:
+            if (time_val != self.step_base_time) and (self.current_weather != self.step_base_weather):
+                self.flash_time_weather_icons()
+                self._revert_time_buttons()
+                return
         self.current_time = time_val
         if not self._initializing:
             to_remove = [r for r, data in self.stored_rows.items() if not data.get('locked', False)]
@@ -813,9 +866,14 @@ class PathTrackerWindow(QDialog):
             self.run_simulation(scroll_back_up=False)
 
     def change_weather(self, weather_val):
-        """Handles the changing time interaction: removes all non-locked rows and changes the weather to be stored when caught"""
+        """Handles the changing weather interaction: removes all non-locked rows and changes the weather to be stored when caught"""
         if self.is_flashing:
             return
+        if self.spawn_counts[0] != -1 and not self._initializing:
+            if (weather_val != self.step_base_weather) and (self.current_time != self.step_base_time):
+                self.flash_time_weather_icons()
+                self._revert_weather_buttons()
+                return
         self.current_weather = weather_val
         if not self._initializing:
             to_remove = [r for r, data in self.stored_rows.items() if not data.get('locked', False)]
@@ -851,6 +909,55 @@ class PathTrackerWindow(QDialog):
         QTimer.singleShot(500, lambda: self.path_display_label.setText(original))
         QTimer.singleShot(750, lambda: self.path_display_label.setText(blink))
         QTimer.singleShot(1000, lambda: restore())
+
+    def _revert_time_buttons(self):
+        """Revert time buttons to match self.current_time after a rejected change."""
+        for btn in self.time_buttons:
+            btn.blockSignals(True)
+        self.btn_morning.setChecked(self.current_time == LATime.DAWN.value)
+        self.btn_midday.setChecked(self.current_time == LATime.DAY.value)
+        self.btn_night.setChecked(self.current_time == LATime.NIGHT.value)
+        for btn in self.time_buttons:
+            btn.blockSignals(False)
+
+    def _revert_weather_buttons(self):
+        """Revert weather buttons to match self.current_weather after a rejected change."""
+        for btn, wval in zip(self.weather_buttons, self.weather_button_values):
+            btn.blockSignals(True)
+            btn.setChecked(wval == self.current_weather)
+            btn.blockSignals(False)
+
+    def flash_time_weather_icons(self):
+        """Flash all time and weather buttons red when the variable multispawner constraint is violated."""
+        if self.is_flashing:
+            return
+        self.is_flashing = True
+        red_style = "QPushButton { background: rgba(200, 0, 0, 100); }"
+        all_btns = self.time_buttons + self.weather_buttons
+
+        def go_red():
+            for btn in all_btns:
+                btn.setStyleSheet(red_style)
+
+        def go_clear():
+            for btn in all_btns:
+                btn.setStyleSheet("")
+
+        def restore():
+            go_clear()
+            self.is_flashing = False
+
+        go_red()
+        QTimer.singleShot(250, go_clear)
+        QTimer.singleShot(500, go_red)
+        QTimer.singleShot(750, go_clear)
+        QTimer.singleShot(1000, restore)
+        self.warning_label.setTextFormat(Qt.RichText)
+        self.warning_label.setText(
+            "You cannot change <b>both</b> the time of day <b>and</b> the weather</b>!<br>"
+            "Only choose one to change for the next step."
+        )
+        self._warning_timer.start(10000)
 
     def update_last_advance_weather(self):
         """Store the time of day and weather for the last advance (the pokemon that the user chose to search for)"""
