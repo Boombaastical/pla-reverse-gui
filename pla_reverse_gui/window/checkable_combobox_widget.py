@@ -30,6 +30,7 @@ class CheckableComboBox(QComboBox):
         self.item_count = 0
         self.line_edit_locked = False
         self.locked_text = ""
+        self._inside_item_press = False
 
     def line_edit_changed(self, text: str) -> None:
         """Ensure QComboBox does not automatically change lineedit text"""
@@ -55,6 +56,7 @@ class CheckableComboBox(QComboBox):
 
     def handle_item_pressed(self, index):
         """Check an item when clicked"""
+        self._inside_item_press = True
         item = self.model().itemFromIndex(index)
         item.setCheckState(
             QtCore.Qt.Unchecked
@@ -62,6 +64,12 @@ class CheckableComboBox(QComboBox):
             else QtCore.Qt.Checked
         )
         self.changed.emit(index)
+
+    def hidePopup(self):
+        if self._inside_item_press:
+            self._inside_item_press = False
+            return
+        super().hidePopup()
 
     def handle_model_data_changed(self):
         """Check an item when clicked"""

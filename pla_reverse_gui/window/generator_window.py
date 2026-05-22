@@ -31,7 +31,7 @@ from qtpy.QtWidgets import (
     QStyleOptionViewItem,
     QTableWidgetItem,
 )
-from qtpy.QtGui import QRegularExpressionValidator, QIcon, QPainter, QPixmap, QColor
+from qtpy.QtGui import QRegularExpressionValidator, QIcon, QPainter, QPixmap, QColor, QBrush
 from qtpy import QtCore
 from qtpy.QtCore import QThread, Signal, Qt, QSettings, QSize
 
@@ -328,7 +328,7 @@ class GeneratorWindow(QDialog):
 
         self.species_filter, species_widget = labled_widget("Species Filter:", CheckableComboBox)
         self.species_filter: CheckableComboBox
-        for species_form in self.unique_slots:
+        for species_form in sorted(self.unique_slots, key=lambda sf: get_name_en(*sf)):
             self.species_filter.add_checked_item(get_name_en(*species_form), species_form)
 
         self.gender_filter, gender_widget = labled_widget("Gender Filter:", CheckableComboBox)
@@ -815,6 +815,8 @@ class GeneratorWindow(QDialog):
             if self.progress_bar.maximum() == 0:
                 self.progress_bar.setMaximum(1)
                 self.progress_bar.setValue(1)
+            if self.chain_results_filter.isChecked():
+                self.reorder_chain_groups()
 
         self.generate_button.setText("Cancel")
         self.generate_button.clicked.disconnect(self.generate)
@@ -917,10 +919,13 @@ class GeneratorWindow(QDialog):
         id_item = QTableWidgetItem()
         id_item.setData(Qt.UserRole, result_id)
 
-        # Generate sort key
+        # Generate sort key (chain mode uses a separate chain sort key set later)
         path_str_sort = ''.join(str(step) for step in path)
-        sort_key = f"{advance:02d}" + path_str_sort
-        sort_item = QTableWidgetItem(sort_key)
+        if self.chain_results_filter.isChecked():
+            sort_item = QTableWidgetItem("")   # placeholder; filled by update_chain_sort_keys
+        else:
+            sort_key = f"{advance:02d}" + path_str_sort
+            sort_item = QTableWidgetItem(sort_key)
 
         items = [
             advance_item, path_item, weather_item, time_item, species_item,
@@ -946,11 +951,92 @@ class GeneratorWindow(QDialog):
         self.row_weather_sets[row_i] = {weather_val}
         self.row_time_sets[row_i] = {time_val}
         if self.chain_results_filter.isChecked():
-            self.result_table.model().sort(18, Qt.AscendingOrder)   # sort by group ID
+            self.update_chain_sort_keys()   # compute inter-group order, update col 20, sort
         else:
             self.result_table.model().sort(20, Qt.AscendingOrder)   # sort by SortKey
 
         return row_i
+
+    def update_chain_sort_keys(self):
+        """Recompute inter-group sort keys (col 20) for all chain-mode rows and re-sort."""
+        table = self.result_table
+        row_count = table.rowCount()
+        if row_count == 0:
+            return
+
+        rows_data = []
+        for row_i in range(row_count):
+            group_str = table.item(row_i, 18).text()
+            group_tuple = tuple(int(x) for x in group_str.split('.'))
+            advance = int(table.item(row_i, 0).text())
+            rows_data.append((row_i, group_tuple, advance))
+
+        root_groups = {}
+        for row_i, group_tuple, advance in rows_data:
+            root_groups.setdefault(group_tuple[0], []).append((row_i, group_tuple, advance))
+
+        root_stats = {}
+        for root_id, rows in root_groups.items():
+            max_depth = max(len(gt) for _, gt, _ in rows)
+            last_gen_advances = [adv for _, gt, adv in rows if len(gt) == max_depth]
+            root_stats[root_id] = (max_depth, min(last_gen_advances))
+
+        sorted_roots = sorted(
+            root_stats.keys(),
+            key=lambda r: (-root_stats[r][0], root_stats[r][1], r)
+        )
+        root_to_pos = {root_id: pos for pos, root_id in enumerate(sorted_roots)}
+
+        for row_i, group_tuple, _ in rows_data:
+            pos = root_to_pos[group_tuple[0]]
+            chain_key = f"{pos:05d}" + "".join(f".{x:03d}" for x in group_tuple[1:])
+            table.item(row_i, 20).setText(chain_key)
+
+        table.model().sort(20, Qt.AscendingOrder)
+
+    def reorder_chain_groups(self):
+        """After generation: remap col 18 group strings to sequential IDs in the
+        correct inter-group order, update background colors, and re-sort by col 18."""
+        table = self.result_table
+        row_count = table.rowCount()
+        if row_count == 0:
+            return
+
+        rows_data = []
+        for row_i in range(row_count):
+            group_str = table.item(row_i, 18).text()
+            group_tuple = tuple(int(x) for x in group_str.split('.'))
+            advance = int(table.item(row_i, 0).text())
+            rows_data.append((row_i, group_tuple, advance))
+
+        root_groups = {}
+        for row_i, group_tuple, advance in rows_data:
+            root_groups.setdefault(group_tuple[0], []).append((row_i, group_tuple, advance))
+
+        root_stats = {}
+        for root_id, rows in root_groups.items():
+            max_depth = max(len(gt) for _, gt, _ in rows)
+            last_gen_advances = [adv for _, gt, adv in rows if len(gt) == max_depth]
+            root_stats[root_id] = (max_depth, min(last_gen_advances))
+
+        sorted_roots = sorted(
+            root_stats.keys(),
+            key=lambda r: (-root_stats[r][0], root_stats[r][1], r)
+        )
+        root_remap = {old_id: new_id for new_id, old_id in enumerate(sorted_roots)}
+
+        dark_blue = QColor(35, 55, 75)
+        for row_i, group_tuple, _ in rows_data:
+            new_root_id = root_remap[group_tuple[0]]
+            new_group_tuple = (new_root_id,) + group_tuple[1:]
+            table.item(row_i, 18).setText('.'.join(f"{p:03d}" for p in new_group_tuple))
+            new_parity = new_root_id % 2
+            for col in range(table.columnCount()):
+                item = table.item(row_i, col)
+                if item:
+                    item.setBackground(dark_blue if new_parity == 1 else QBrush())
+
+        table.model().sort(18, Qt.AscendingOrder)
 
     def update_result(self, result_id: int, weather_val: int, time_val: int):
         row = self.find_row_by_id(result_id)
@@ -1034,16 +1120,8 @@ class GeneratorUpdateThread(QThread):
             )
             generator_thread.start()
 
-            while generator_thread.isRunning():
-                if self.isInterruptionRequested():
-                    parent_data[1] = 1
-                    break
-                self.progress.emit(cumulative + parent_data[0])
-                time.sleep(0.1)
-
-            generator_thread.wait()
-
-            for row in generator_thread.results:
+            def process_single_result(row):
+                nonlocal next_root_id
                 species, form, is_alpha = row[2]
                 ec = row[3]
                 pid = row[4]
@@ -1055,7 +1133,7 @@ class GeneratorUpdateThread(QThread):
 
                 weather_val = row[12]
                 weather_represented = self.rep_to_weathers.get(weather_val, [weather_val])
-                
+
                 time_val = row[13]
                 time_represented = self.rep_to_times.get(time_val, [time_val])
 
@@ -1070,7 +1148,7 @@ class GeneratorUpdateThread(QThread):
                     weathers_to_add = [weather_val]
 
                 if not weathers_to_add:
-                    continue
+                    return
 
                 # Find the longest parent path prefix that already has any hidden ID
                 parent_id = None
@@ -1145,6 +1223,24 @@ class GeneratorUpdateThread(QThread):
                     # Add remaining times (using first_w)
                     for t in time_represented[1:]:
                         self.parent_window.update_result(result_id, first_w, t)
+
+            processed_index = 0
+            while generator_thread.isRunning():
+                if self.isInterruptionRequested():
+                    parent_data[1] = 1
+                    break
+                self.progress.emit(cumulative + parent_data[0])
+                current_len = len(generator_thread.results)
+                for i in range(processed_index, current_len):
+                    process_single_result(generator_thread.results[i])
+                processed_index = current_len
+                time.sleep(0.1)
+
+            generator_thread.wait()
+
+            # Process any results appended after the final poll
+            for i in range(processed_index, len(generator_thread.results)):
+                process_single_result(generator_thread.results[i])
 
             cumulative += self.per_combo_progress[idx]
             self.progress.emit(cumulative)
